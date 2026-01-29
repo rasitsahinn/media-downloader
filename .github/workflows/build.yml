@@ -1,0 +1,46 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install pyinstaller requests beautifulsoup4 lxml Pillow selenium streamlit
+    
+    - name: Download FFmpeg
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
+        Expand-Archive -Path ffmpeg.zip
+        Copy-Item "ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "."
+    
+    - name: Build EXE
+      run: |
+        pyinstaller --onefile --add-binary "ffmpeg.exe;." --add-data "ui.py;." --add-data "grab_images.py;." --add-data "video_downloader.py;." --console --name MediaDownloader launcher.py
+    
+    - name: Create Package
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path Release
+        Copy-Item dist\MediaDownloader.exe Release\
+        Compress-Archive -Path Release\* -DestinationPath MediaDownloader-Windows.zip
+    
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: MediaDownloader-Windows
+        path: MediaDownloader-Windows.zip
