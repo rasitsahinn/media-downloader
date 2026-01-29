@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GUI Launcher for Media Downloader - Multi-layer protection against infinite loops"""
+"""GUI Launcher for Media Downloader"""
 
 import sys
 import subprocess
@@ -11,7 +11,6 @@ import multiprocessing
 import os
 
 def find_free_port():
-    """Find an available port for Streamlit"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
         s.listen(1)
@@ -19,54 +18,39 @@ def find_free_port():
     return port
 
 def main():
-    # ═══════════════════════════════════════════════════════════
-    # LAYER 1: Subprocess Detection
-    # Eğer subprocess içindeysek, çık (sonsuz döngüyü önle)
-    # ═══════════════════════════════════════════════════════════
     if os.environ.get('MEDIA_DOWNLOADER_SUBPROCESS'):
         return
     
     print("=" * 60)
     print("  MEDIA DOWNLOADER")
-    print("  Starting Web Interface...")
     print("=" * 60)
     print()
     
-    # ═══════════════════════════════════════════════════════════
-    # Find ui.py location
-    # ═══════════════════════════════════════════════════════════
     if getattr(sys, 'frozen', False):
-        # Running as EXE (PyInstaller)
         app_dir = Path(sys._MEIPASS)
     else:
-        # Running as script
         app_dir = Path(__file__).parent
     
     ui_path = app_dir / "ui.py"
     
     if not ui_path.exists():
         print(f"ERROR: ui.py not found at {app_dir}")
-        print("Make sure ui.py is included in the package")
+        print(f"Looking in: {app_dir}")
         input("\nPress Enter to exit...")
         sys.exit(1)
     
-    # ═══════════════════════════════════════════════════════════
-    # Find available port
-    # ═══════════════════════════════════════════════════════════
+    print(f"✓ Found ui.py at: {ui_path}")
+    
     port = find_free_port()
-    print(f"Port: {port}")
+    print(f"✓ Port selected: {port}")
+    print()
     print("Starting Streamlit server...")
-    print("Browser will open automatically in 5 seconds...")
+    print("This may take 10-15 seconds...")
     print()
     
-    # ═══════════════════════════════════════════════════════════
-    # LAYER 2: Environment Variable Protection
-    # Subprocess'e flag gönder
-    # ═══════════════════════════════════════════════════════════
     env = os.environ.copy()
     env['MEDIA_DOWNLOADER_SUBPROCESS'] = '1'
     
-    # Streamlit command
     cmd = [
         sys.executable,
         "-m", "streamlit", "run",
@@ -74,80 +58,73 @@ def main():
         "--server.port", str(port),
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
-        "--server.fileWatcherType", "none",
-        "--server.enableXsrfProtection", "false",
-        "--server.enableCORS", "false"
+        "--server.fileWatcherType", "none"
     ]
     
     try:
-        # ═══════════════════════════════════════════════════════════
-        # Start Streamlit subprocess with protection
-        # ═══════════════════════════════════════════════════════════
-        if sys.platform == 'win32':
-            # Windows: Hide console window for subprocess
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env,
-                startupinfo=startupinfo
-            )
-        else:
-            # Mac/Linux
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env
-            )
+        # Streamlit'i başlat - OUTPUT'U GÖSTER
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            # STDOUT/STDERR'i console'a yönlendir
+            stdout=None,  # Console'a yazdır
+            stderr=None   # Console'a yazdır
+        )
         
-        # Wait for Streamlit to start
-        print("Waiting for Streamlit to initialize...")
-        time.sleep(5)
+        # Streamlit'in başlamasını bekle
+        print("Waiting for Streamlit...")
+        for i in range(15):
+            time.sleep(1)
+            print(".", end="", flush=True)
+            
+            # Crash oldu mu?
+            if proc.poll() is not None:
+                print("\n\nERROR: Streamlit exited unexpectedly!")
+                print(f"Exit code: {proc.returncode}")
+                input("\nPress Enter to exit...")
+                sys.exit(1)
         
-        # Open browser
+        print("\n")
+        
+        # Browser'ı aç
         url = f"http://localhost:{port}"
-        print(f"Opening browser at {url}")
+        print(f"Opening browser: {url}")
         webbrowser.open(url)
         
         print()
         print("=" * 60)
-        print("  ✓ WEB INTERFACE IS RUNNING")
+        print("  ✓ STREAMLIT RUNNING")
         print("=" * 60)
         print()
-        print("  Browser should open automatically.")
-        print("  If not, manually open: " + url)
+        print(f"  URL: {url}")
         print()
-        print("  To stop the server:")
-        print("    - Close this window, or")
-        print("    - Press Ctrl+C")
+        print("  - If browser shows error, wait 5 more seconds")
+        print("  - Then refresh the page")
+        print()
+        print("  - To stop: Press Ctrl+C or close this window")
+        print()
+        print("  DO NOT CLOSE THIS WINDOW!")
+        print("  Streamlit output will appear below:")
         print()
         print("=" * 60)
         print()
         
-        # Keep process alive
-        proc.wait()
-        
-    except KeyboardInterrupt:
-        print("\n\nShutting down server...")
-        proc.terminate()
-        proc.wait()
-        print("Server stopped.")
+        # Process'i canlı tut - ÇIKMA!
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            print("\n\nShutting down...")
+            proc.terminate()
+            proc.wait()
+            print("Stopped.")
         
     except Exception as e:
-        print(f"\nERROR: {e}")
-        print("\nPlease report this issue on GitHub")
+        print(f"\n\nFATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         input("\nPress Enter to exit...")
         sys.exit(1)
 
 if __name__ == "__main__":
-    # ═══════════════════════════════════════════════════════════
-    # LAYER 3: Multiprocessing Freeze Support
-    # PyInstaller compatibility
-    # ═══════════════════════════════════════════════════════════
     multiprocessing.freeze_support()
     main()
