@@ -156,6 +156,52 @@ if __name__ == "__main__":
     main()
 ```
 
+---
 
+## **BU SÜRÜM NE YAPACAK:**
+
+1. ✅ Streamlit'in **her satır çıktısını** gösterecek
+2. ✅ Hata mesajlarını yakalayacak
+3. ✅ "You can now view" mesajını görmeden browser açmayacak
+4. ✅ Eğer hata varsa **tam log'u** gösterecek
+
+---
+
+## **ADIMLAR:**
+
+### **1. Güncelle:**
+
+1. ✅ GitHub → `launcher.py` aç
+2. ✅ Düzenle (✏️)
+3. ✅ Yukarıdaki kodu yapıştır
+4. ✅ Commit: `Capture and display Streamlit output`
+
+### **2. Build Bekle:**
+
+⏳ ~15-20 dakika
+
+### **3. Test Et:**
+
+Yeni EXE'yi çalıştır. **Bu sefer göreceğin:**
+```
+MEDIA DOWNLOADER
+══════════════════════════════════
+
+✓ Found ui.py at: C:\Users\...\ui.py
+✓ Port selected: 62945
+
+Starting Streamlit server...
+
+Command: python.exe -m streamlit run ui.py --server.port 62945 ...
+
+──────────────────────────────────
+STREAMLIT OUTPUT:
+──────────────────────────────────
+
+[Burası önemli! Streamlit ne diyor göreceğiz]
+Traceback (most recent call last):
+  File "...", line X, in <module>
+    import XYZ
+ModuleNotFoundError: No module named 'XYZ'
 
 [veya başka bir hata]
