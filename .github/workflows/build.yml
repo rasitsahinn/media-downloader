@@ -38,26 +38,25 @@ jobs:
 
         block_cipher = None
 
-        # Streamlit için tüm dosyaları topla
         datas = []
         binaries = []
         hiddenimports = []
 
-        # Streamlit
+        # Collect all Streamlit files
         tmp_ret = collect_all('streamlit')
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-        # Ek datalar
+        # Add project files
         datas += [
             ('ui.py', '.'),
             ('grab_images.py', '.'),
             ('video_downloader.py', '.'),
         ]
 
-        binaries += [
-            ('ffmpeg.exe', '.'),
-        ]
+        # Add FFmpeg binary
+        binaries += [('ffmpeg.exe', '.')]
 
+        # Additional hidden imports
         hiddenimports += [
             'streamlit.runtime.scriptrunner.magic_funcs',
             'streamlit.web.cli',
@@ -115,20 +114,45 @@ jobs:
         Copy-Item dist\MediaDownloader.exe Release\
         
         @"
-        MEDIA DOWNLOADER
-        ================
+        ═══════════════════════════════════════════════════════
+                    MEDIA DOWNLOADER v1.0
+        ═══════════════════════════════════════════════════════
 
         QUICK START:
+        ------------
         1. Double-click MediaDownloader.exe
-        2. Wait 5 seconds
-        3. Browser opens automatically
-        4. Use the web interface!
+        2. Wait 5-10 seconds
+        3. Browser opens automatically with the interface
+        4. Paste URL and click Run!
+
+        FEATURES:
+        ---------
+        ✓ Download videos (MP4 + HLS → MP4 conversion)
+        ✓ Download images
+        ✓ No Python installation required
+        ✓ Fully portable
 
         TROUBLESHOOTING:
-        - If multiple windows open, close all and try again
-        - If browser doesn't open, manually go to: http://localhost:8501
-        - Close the black window to stop the server
+        ----------------
+        "Multiple windows opening"
+        → Fixed in this version!
 
+        "Browser doesn't open"
+        → Manually go to: http://localhost:8501
+
+        "Antivirus blocks it"
+        → This is a false positive (PyInstaller common issue)
+        → Allow the file in your antivirus
+
+        SYSTEM REQUIREMENTS:
+        --------------------
+        - Windows 10/11
+        - 4GB RAM minimum
+        - Internet connection (to download media)
+
+        ═══════════════════════════════════════════════════════
+        GitHub: github.com/rasitsahinn/media-downloader
+        ═══════════════════════════════════════════════════════
         "@ | Out-File -FilePath Release\README.txt -Encoding UTF8
         
         Compress-Archive -Path Release\* -DestinationPath MediaDownloader-Windows.zip
