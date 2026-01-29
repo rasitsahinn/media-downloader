@@ -35,7 +35,6 @@ def main():
     
     if not ui_path.exists():
         print(f"ERROR: ui.py not found at {app_dir}")
-        print(f"Looking in: {app_dir}")
         input("\nPress Enter to exit...")
         sys.exit(1)
     
@@ -45,7 +44,6 @@ def main():
     print(f"✓ Port selected: {port}")
     print()
     print("Starting Streamlit server...")
-    print("This may take 10-15 seconds...")
     print()
     
     env = os.environ.copy()
@@ -61,62 +59,90 @@ def main():
         "--server.fileWatcherType", "none"
     ]
     
+    print("Command:", " ".join(cmd))
+    print()
+    print("-" * 60)
+    print("STREAMLIT OUTPUT:")
+    print("-" * 60)
+    print()
+    
     try:
-        # Streamlit'i başlat - OUTPUT'U GÖSTER
+        # STDOUT ve STDERR'i YAKALA ve GÖSTER
         proc = subprocess.Popen(
             cmd,
             env=env,
-            # STDOUT/STDERR'i console'a yönlendir
-            stdout=None,  # Console'a yazdır
-            stderr=None   # Console'a yazdır
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
         )
         
-        # Streamlit'in başlamasını bekle
-        print("Waiting for Streamlit...")
-        for i in range(15):
-            time.sleep(1)
-            print(".", end="", flush=True)
+        # Output'u oku ve göster
+        streamlit_started = False
+        output_lines = []
+        
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                break
             
-            # Crash oldu mu?
-            if proc.poll() is not None:
-                print("\n\nERROR: Streamlit exited unexpectedly!")
-                print(f"Exit code: {proc.returncode}")
-                input("\nPress Enter to exit...")
-                sys.exit(1)
+            print(line.rstrip())
+            output_lines.append(line)
+            
+            # "You can now view" mesajını gördük mü?
+            if "You can now view" in line or "Local URL" in line:
+                streamlit_started = True
+                break
         
-        print("\n")
+        # Process bitti mi?
+        exit_code = proc.poll()
         
-        # Browser'ı aç
-        url = f"http://localhost:{port}"
-        print(f"Opening browser: {url}")
-        webbrowser.open(url)
+        if exit_code is not None:
+            print()
+            print("-" * 60)
+            print(f"ERROR: Streamlit exited with code {exit_code}")
+            print("-" * 60)
+            print()
+            print("Full output:")
+            print("".join(output_lines))
+            print()
+            input("Press Enter to exit...")
+            sys.exit(1)
         
-        print()
-        print("=" * 60)
-        print("  ✓ STREAMLIT RUNNING")
-        print("=" * 60)
-        print()
-        print(f"  URL: {url}")
-        print()
-        print("  - If browser shows error, wait 5 more seconds")
-        print("  - Then refresh the page")
-        print()
-        print("  - To stop: Press Ctrl+C or close this window")
-        print()
-        print("  DO NOT CLOSE THIS WINDOW!")
-        print("  Streamlit output will appear below:")
-        print()
-        print("=" * 60)
-        print()
-        
-        # Process'i canlı tut - ÇIKMA!
-        try:
+        if streamlit_started:
+            print()
+            print("-" * 60)
+            print("✓ STREAMLIT STARTED SUCCESSFULLY!")
+            print("-" * 60)
+            print()
+            
+            time.sleep(2)
+            url = f"http://localhost:{port}"
+            print(f"Opening browser: {url}")
+            webbrowser.open(url)
+            
+            print()
+            print("Browser should open now.")
+            print("Close this window to stop Streamlit.")
+            print()
+            
+            # Process'i canlı tut
             proc.wait()
-        except KeyboardInterrupt:
-            print("\n\nShutting down...")
-            proc.terminate()
+        else:
+            print()
+            print("WARNING: Streamlit didn't show startup message")
+            print("Trying to open browser anyway...")
+            print()
+            
+            time.sleep(5)
+            url = f"http://localhost:{port}"
+            webbrowser.open(url)
             proc.wait()
-            print("Stopped.")
+        
+    except KeyboardInterrupt:
+        print("\n\nShutting down...")
+        proc.terminate()
+        proc.wait()
         
     except Exception as e:
         print(f"\n\nFATAL ERROR: {e}")
@@ -128,3 +154,8 @@ def main():
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     main()
+```
+
+
+
+[veya başka bir hata]
