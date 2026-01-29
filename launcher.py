@@ -38,10 +38,10 @@ def main():
         input("\nPress Enter to exit...")
         sys.exit(1)
     
-    print(f"✓ Found ui.py at: {ui_path}")
+    print(f"OK - Found ui.py at: {ui_path}")
     
     port = find_free_port()
-    print(f"✓ Port selected: {port}")
+    print(f"OK - Port selected: {port}")
     print()
     print("Starting Streamlit server...")
     print()
@@ -67,7 +67,6 @@ def main():
     print()
     
     try:
-        # STDOUT ve STDERR'i YAKALA ve GÖSTER
         proc = subprocess.Popen(
             cmd,
             env=env,
@@ -77,7 +76,6 @@ def main():
             bufsize=1
         )
         
-        # Output'u oku ve göster
         streamlit_started = False
         output_lines = []
         
@@ -89,12 +87,10 @@ def main():
             print(line.rstrip())
             output_lines.append(line)
             
-            # "You can now view" mesajını gördük mü?
             if "You can now view" in line or "Local URL" in line:
                 streamlit_started = True
                 break
         
-        # Process bitti mi?
         exit_code = proc.poll()
         
         if exit_code is not None:
@@ -112,7 +108,7 @@ def main():
         if streamlit_started:
             print()
             print("-" * 60)
-            print("✓ STREAMLIT STARTED SUCCESSFULLY!")
+            print("SUCCESS - STREAMLIT STARTED!")
             print("-" * 60)
             print()
             
@@ -126,7 +122,6 @@ def main():
             print("Close this window to stop Streamlit.")
             print()
             
-            # Process'i canlı tut
             proc.wait()
         else:
             print()
@@ -154,54 +149,3 @@ def main():
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     main()
-```
-
----
-
-## **BU SÜRÜM NE YAPACAK:**
-
-1. ✅ Streamlit'in **her satır çıktısını** gösterecek
-2. ✅ Hata mesajlarını yakalayacak
-3. ✅ "You can now view" mesajını görmeden browser açmayacak
-4. ✅ Eğer hata varsa **tam log'u** gösterecek
-
----
-
-## **ADIMLAR:**
-
-### **1. Güncelle:**
-
-1. ✅ GitHub → `launcher.py` aç
-2. ✅ Düzenle (✏️)
-3. ✅ Yukarıdaki kodu yapıştır
-4. ✅ Commit: `Capture and display Streamlit output`
-
-### **2. Build Bekle:**
-
-⏳ ~15-20 dakika
-
-### **3. Test Et:**
-
-Yeni EXE'yi çalıştır. **Bu sefer göreceğin:**
-```
-MEDIA DOWNLOADER
-══════════════════════════════════
-
-✓ Found ui.py at: C:\Users\...\ui.py
-✓ Port selected: 62945
-
-Starting Streamlit server...
-
-Command: python.exe -m streamlit run ui.py --server.port 62945 ...
-
-──────────────────────────────────
-STREAMLIT OUTPUT:
-──────────────────────────────────
-
-[Burası önemli! Streamlit ne diyor göreceğiz]
-Traceback (most recent call last):
-  File "...", line X, in <module>
-    import XYZ
-ModuleNotFoundError: No module named 'XYZ'
-
-[veya başka bir hata]
