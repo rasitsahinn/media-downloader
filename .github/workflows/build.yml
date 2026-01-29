@@ -28,15 +28,109 @@ jobs:
         Expand-Archive -Path ffmpeg.zip
         Copy-Item "ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "."
     
+    - name: Create PyInstaller Spec
+      shell: pwsh
+      run: |
+        @"
+        # -*- mode: python ; coding: utf-8 -*-
+        import sys
+        from PyInstaller.utils.hooks import collect_all
+
+        block_cipher = None
+
+        # Streamlit için tüm dosyaları topla
+        datas = []
+        binaries = []
+        hiddenimports = []
+
+        # Streamlit
+        tmp_ret = collect_all('streamlit')
+        datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+        # Ek datalar
+        datas += [
+            ('ui.py', '.'),
+            ('grab_images.py', '.'),
+            ('video_downloader.py', '.'),
+        ]
+
+        binaries += [
+            ('ffmpeg.exe', '.'),
+        ]
+
+        hiddenimports += [
+            'streamlit.runtime.scriptrunner.magic_funcs',
+            'streamlit.web.cli',
+        ]
+
+        a = Analysis(
+            ['launcher.py'],
+            pathex=[],
+            binaries=binaries,
+            datas=datas,
+            hiddenimports=hiddenimports,
+            hookspath=[],
+            hooksconfig={},
+            runtime_hooks=[],
+            excludes=[],
+            win_no_prefer_redirects=False,
+            win_private_assemblies=False,
+            cipher=block_cipher,
+            noarchive=False,
+        )
+
+        pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+        exe = EXE(
+            pyz,
+            a.scripts,
+            a.binaries,
+            a.zipfiles,
+            a.datas,
+            [],
+            name='MediaDownloader',
+            debug=False,
+            bootloader_ignore_signals=False,
+            strip=False,
+            upx=True,
+            upx_exclude=[],
+            runtime_tmpdir=None,
+            console=True,
+            disable_windowed_traceback=False,
+            argv_emulation=False,
+            target_arch=None,
+            codesign_identity=None,
+            entitlements_file=None,
+        )
+        "@ | Out-File -FilePath MediaDownloader.spec -Encoding UTF8
+    
     - name: Build EXE
       run: |
-        pyinstaller --onefile --add-binary "ffmpeg.exe;." --add-data "ui.py;." --add-data "grab_images.py;." --add-data "video_downloader.py;." --console --name MediaDownloader launcher.py
+        pyinstaller MediaDownloader.spec
     
     - name: Create Package
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Path Release
         Copy-Item dist\MediaDownloader.exe Release\
+        
+        @"
+        MEDIA DOWNLOADER
+        ================
+
+        QUICK START:
+        1. Double-click MediaDownloader.exe
+        2. Wait 5 seconds
+        3. Browser opens automatically
+        4. Use the web interface!
+
+        TROUBLESHOOTING:
+        - If multiple windows open, close all and try again
+        - If browser doesn't open, manually go to: http://localhost:8501
+        - Close the black window to stop the server
+
+        "@ | Out-File -FilePath Release\README.txt -Encoding UTF8
+        
         Compress-Archive -Path Release\* -DestinationPath MediaDownloader-Windows.zip
     
     - name: Upload
