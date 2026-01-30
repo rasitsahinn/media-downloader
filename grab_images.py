@@ -469,8 +469,7 @@ class ImageDownloader:
 
     # ---- Linked-card image suppression (conditional) ----
     NOISE_ANCESTOR_RE = re.compile(
-        r"""
-(?ix)
+        r"""(?ix)
         (?:
            # related/feeds/cards
            \brelated\b|\brecommend\b|\brecommended\b|\bmore\b|\bother\b|\bsimilar\b|\btrending\b|
