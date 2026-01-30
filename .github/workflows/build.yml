@@ -25,15 +25,15 @@ jobs:
       shell: pwsh
       run: |
         Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
-        Expand-Archive -Path ffmpeg.zip
-        Copy-Item "ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "."
+        Expand-Archive -Path ffmpeg.zip -DestinationPath .
+        Copy-Item "ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "."
     
     - name: Download ChromeDriver
       shell: pwsh
       run: |
         Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.204/win64/chromedriver-win64.zip" -OutFile "chromedriver.zip"
-        Expand-Archive -Path chromedriver.zip
-        Copy-Item "chromedriver-win64\chromedriver.exe" "."
+        Expand-Archive -Path chromedriver.zip -DestinationPath .
+        Copy-Item "chromedriver-win64\chromedriver.exe" -Destination "."
     
     - name: Build grab_images.exe
       run: |
