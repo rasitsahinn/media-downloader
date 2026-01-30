@@ -19,7 +19,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install pyinstaller requests beautifulsoup4 lxml Pillow selenium
+        pip install pyinstaller requests beautifulsoup4 lxml Pillow selenium imagehash
     
     - name: Download FFmpeg
       shell: pwsh
