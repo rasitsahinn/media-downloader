@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Image downloader with advanced features
-Supports crawling, CSS parsing, compression, and perceptual hashing
+Supports crawling, CSS parsing, compression, perceptual hashing, and smart content filtering
 """
 
 import os
@@ -49,7 +49,7 @@ INLINE_STYLE_PATTERN = re.compile(
 
 
 class ImageDownloader:
-    """Advanced image downloader with crawling and deduplication"""
+    """Advanced image downloader with crawling, deduplication, and smart content filtering"""
     
     def __init__(
         self,
@@ -59,7 +59,10 @@ class ImageDownloader:
         parse_css: bool = False,
         compress: bool = False,
         perceptual_hash: bool = False,
-        max_size_mb: int = 50
+        max_size_mb: int = 50,
+        min_width: int = 200,
+        min_height: int = 150,
+        content_only: bool = True
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -70,6 +73,9 @@ class ImageDownloader:
         self.compress = compress
         self.perceptual_hash = perceptual_hash
         self.max_size_mb = max_size_mb
+        self.min_width = min_width
+        self.min_height = min_height
+        self.content_only = content_only
         
         self.session = requests.Session()
         self.session.headers.update({
@@ -86,6 +92,8 @@ class ImageDownloader:
             'images_found': 0,
             'images_downloaded': 0,
             'duplicates_skipped': 0,
+            'filtered_unwanted': 0,
+            'filtered_size': 0,
             'errors': 0
         }
     
@@ -115,7 +123,6 @@ class ImageDownloader:
         if not url:
             return False
         
-        # Remove query strings for extension check
         path = urlparse(url).path.lower()
         
         # Check common image extensions
@@ -123,11 +130,76 @@ class ImageDownloader:
         if any(path.endswith(ext) for ext in image_extensions):
             return True
         
-        # Check if path looks like image (common patterns)
+        # Check if path looks like image
         if any(x in path for x in ['/image', '/img', '/photo', '/picture', '/thumb']):
             return True
         
         return False
+    
+    def _is_unwanted_image(self, img_tag, img_url: str) -> Tuple[bool, str]:
+        """
+        Check if image should be filtered out based on multiple criteria
+        Returns (is_unwanted, reason)
+        """
+        
+        # 1. URL Pattern Blacklist
+        url_lower = img_url.lower()
+        url_blacklist = ['/logo', '/icon', '/sprite', '/ad', '/banner', 
+                        '/placeholder', '/avatar', '/emoji', '/social']
+        
+        for pattern in url_blacklist:
+            if pattern in url_lower:
+                return True, f"url_pattern:{pattern}"
+        
+        # 2. Class Blacklist
+        classes = img_tag.get('class', [])
+        classes_str = ' '.join(classes).lower() if classes else ''
+        
+        class_blacklist = ['logo', 'icon', 'avatar', 'badge', 'emoji',
+                          'ad', 'banner', 'widget', 'sidebar', 'nav',
+                          'menu', 'footer', 'header', 'sponsor']
+        
+        for unwanted in class_blacklist:
+            if unwanted in classes_str:
+                return True, f"class:{unwanted}"
+        
+        # 3. ID Blacklist
+        img_id = (img_tag.get('id') or '').lower()
+        for unwanted in class_blacklist:
+            if unwanted in img_id:
+                return True, f"id:{unwanted}"
+        
+        # 4. Parent Element Check
+        parent = img_tag.find_parent()
+        if parent:
+            parent_class = ' '.join(parent.get('class', [])).lower() if parent.get('class') else ''
+            parent_blacklist = ['header', 'footer', 'nav', 'sidebar', 'menu', 'ad', 'widget']
+            
+            for unwanted in parent_blacklist:
+                if unwanted in parent_class:
+                    return True, f"parent:{unwanted}"
+        
+        # 5. Alt Text Check
+        alt = (img_tag.get('alt') or '').lower()
+        alt_blacklist = ['logo', 'icon', 'advertisement', 'ad', 'banner']
+        
+        for unwanted in alt_blacklist:
+            if unwanted in alt:
+                return True, f"alt:{unwanted}"
+        
+        # 6. Minimum Size Check (from HTML attributes)
+        width = img_tag.get('width')
+        height = img_tag.get('height')
+        
+        if width and height:
+            try:
+                w, h = int(width), int(height)
+                if w < self.min_width or h < self.min_height:
+                    return True, f"size:{w}x{h}"
+            except (ValueError, TypeError):
+                pass
+        
+        return False, ""
     
     def _get_image_hash(self, content: bytes) -> str:
         """Calculate content hash"""
@@ -148,12 +220,10 @@ class ImageDownloader:
     
     def _should_download(self, content: bytes) -> Tuple[bool, str]:
         """Check if image should be downloaded (not duplicate)"""
-        # Check content hash
         content_hash = self._get_image_hash(content)
         if content_hash in self.downloaded_hashes:
             return False, "duplicate_hash"
         
-        # Check perceptual hash if enabled
         if self.perceptual_hash and IMAGEHASH_AVAILABLE:
             phash = self._get_perceptual_hash(content)
             if phash and phash in self.downloaded_phashes:
@@ -169,7 +239,6 @@ class ImageDownloader:
         try:
             img = Image.open(io.BytesIO(content))
             
-            # Convert RGBA to RGB if necessary
             if img.mode == 'RGBA':
                 background = Image.new('RGB', img.size, (255, 255, 255))
                 background.paste(img, mask=img.split()[3])
@@ -177,7 +246,6 @@ class ImageDownloader:
             elif img.mode not in ('RGB', 'L'):
                 img = img.convert('RGB')
             
-            # Compress
             output = io.BytesIO()
             img.save(output, format='JPEG', quality=85, optimize=True)
             return output.getvalue()
@@ -188,60 +256,44 @@ class ImageDownloader:
     def _download_image(self, url: str, base_url: str) -> bool:
         """Download a single image"""
         try:
-            # Resolve relative URLs
             full_url = urljoin(base_url, url)
             
-            # Skip if already visited
             normalized = self._normalize_url(full_url)
             if normalized in self.visited_urls:
                 return False
             self.visited_urls.add(normalized)
             
-            # Rate limiting
             self._rate_limit_wait()
             
-            # Download
-            response = self.session.get(
-                full_url,
-                timeout=self.timeout,
-                stream=True
-            )
+            response = self.session.get(full_url, timeout=self.timeout, stream=True)
             response.raise_for_status()
             
-            # Check size
             content_length = response.headers.get('content-length')
             if content_length and int(content_length) > self.max_size_mb * 1024 * 1024:
-                logger.warning(f"Image too large: {full_url} ({int(content_length) / 1024 / 1024:.1f}MB)")
+                logger.warning(f"Image too large: {full_url}")
                 return False
             
-            # Get content
             content = response.content
             
-            # Check if duplicate
             should_download, reason = self._should_download(content)
             if not should_download:
                 self.stats['duplicates_skipped'] += 1
                 logger.debug(f"Skipping duplicate ({reason}): {full_url}")
                 return False
             
-            # Compress if enabled
             if self.compress:
                 content = self._compress_image(content)
             
-            # Determine filename
             parsed = urlparse(full_url)
             filename = Path(parsed.path).name or 'image'
-            
-            # Ensure valid filename
             filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+            
             if not filename or filename == '_':
                 ext = mimetypes.guess_extension(response.headers.get('content-type', '')) or '.jpg'
                 filename = f"image_{len(self.downloaded_hashes)}{ext}"
             
-            # Save
             output_path = self.output_dir / filename
             
-            # Handle duplicate filenames
             counter = 1
             while output_path.exists():
                 stem = output_path.stem
@@ -264,32 +316,59 @@ class ImageDownloader:
             logger.error(f"Error downloading {url}: {e}")
             return False
     
-    def _extract_images_from_html(self, soup: BeautifulSoup, base_url: str) -> Set[str]:
-        """Extract image URLs from HTML"""
+    def _extract_images_from_html(self, soup: BeautifulSoup, base_url: str) -> Set[Tuple[str, object]]:
+        """
+        Extract image URLs from HTML with smart content filtering
+        Returns set of (url, img_tag) tuples
+        """
         images = set()
         
-        # <img> tags
-        for img in soup.find_all('img'):
-            src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
-            if src:
-                images.add(src)
+        # Content-only mode: find content containers first
+        if self.content_only:
+            content_containers = (
+                soup.find_all('article') or
+                soup.find_all(attrs={'class': re.compile(r'(content|post-body|article|entry-content|main-content)', re.I)}) or
+                soup.find_all('main') or
+                [soup]  # Fallback to entire page
+            )
+            
+            search_scope = content_containers
+        else:
+            search_scope = [soup]
         
-        # <source> tags (for <picture> elements)
-        for source in soup.find_all('source'):
-            srcset = source.get('srcset')
-            if srcset:
-                # Parse srcset (can contain multiple URLs)
-                for item in srcset.split(','):
-                    url = item.strip().split()[0]
-                    images.add(url)
+        # Extract from chosen scope
+        for container in search_scope:
+            # <img> tags
+            for img in container.find_all('img'):
+                src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+                if src:
+                    # Check if unwanted
+                    is_unwanted, reason = self._is_unwanted_image(img, src)
+                    if is_unwanted:
+                        self.stats['filtered_unwanted'] += 1
+                        logger.debug(f"Filtered out ({reason}): {src}")
+                        continue
+                    
+                    images.add((src, img))
+            
+            # <source> tags
+            for source in container.find_all('source'):
+                srcset = source.get('srcset')
+                if srcset:
+                    for item in srcset.split(','):
+                        url = item.strip().split()[0]
+                        # Create dummy tag for filtering
+                        images.add((url, source))
+            
+            # CSS background images in style attributes
+            for tag in container.find_all(style=True):
+                style = tag['style']
+                urls = INLINE_STYLE_PATTERN.findall(style)
+                for url in urls:
+                    images.add((url, tag))
         
-        # CSS background images in style attributes
-        for tag in soup.find_all(style=True):
-            style = tag['style']
-            urls = INLINE_STYLE_PATTERN.findall(style)
-            images.update(urls)
-        
-        return images
+        # Return only URLs (drop tags)
+        return {url for url, tag in images}
     
     def _extract_images_from_css(self, css_text: str) -> Set[str]:
         """Extract image URLs from CSS"""
@@ -305,17 +384,15 @@ class ImageDownloader:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract images from HTML
+            # Extract images from HTML with filtering
             images = self._extract_images_from_html(soup, url)
             
             # Extract images from CSS if enabled
             if self.parse_css:
-                # Inline styles
                 for style_tag in soup.find_all('style'):
                     css_images = self._extract_images_from_css(style_tag.string or '')
                     images.update(css_images)
                 
-                # External CSS files
                 for link in soup.find_all('link', rel='stylesheet'):
                     css_url = link.get('href')
                     if css_url:
@@ -334,54 +411,44 @@ class ImageDownloader:
             logger.error(f"Failed to crawl {url}: {e}")
             return set()
     
-    def download_from_url(
-        self,
-        start_url: str,
-        depth: int = 0,
-        max_pages: int = 50
-    ):
+    def download_from_url(self, start_url: str, depth: int = 0, max_pages: int = 50):
         """Download images from URL with optional crawling"""
         logger.info(f"Starting download from: {start_url}")
+        logger.info(f"Content filtering: {'ENABLED' if self.content_only else 'DISABLED'}")
+        logger.info(f"Min size: {self.min_width}x{self.min_height}")
         logger.info(f"Crawl depth: {depth}, Max pages: {max_pages}")
         
-        # Queue for BFS crawling
         queue = [(start_url, 0)]
         visited_pages = set()
         
         while queue and len(visited_pages) < max_pages:
             current_url, current_depth = queue.pop(0)
             
-            # Skip if already visited
             if current_url in visited_pages:
                 continue
             visited_pages.add(current_url)
             
             logger.info(f"Crawling: {current_url} (depth: {current_depth})")
             
-            # Extract images from page
             images = self._crawl_page(current_url)
             self.stats['images_found'] += len(images)
             
-            logger.info(f"Found {len(images)} images on page")
+            logger.info(f"Found {len(images)} images on page (after filtering)")
             
-            # Download images
             for img_url in images:
                 if self._is_valid_image_url(img_url):
                     self._download_image(img_url, current_url)
             
-            # If we should crawl deeper, extract links
             if current_depth < depth:
                 try:
                     response = self.session.get(current_url, timeout=self.timeout)
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # Find all links on same domain
                     current_domain = urlparse(current_url).netloc
                     for link in soup.find_all('a', href=True):
                         next_url = urljoin(current_url, link['href'])
                         next_domain = urlparse(next_url).netloc
                         
-                        # Only crawl same domain
                         if next_domain == current_domain:
                             if next_url not in visited_pages:
                                 queue.append((next_url, current_depth + 1))
@@ -393,17 +460,18 @@ class ImageDownloader:
         logger.info("\n" + "=" * 60)
         logger.info("DOWNLOAD SUMMARY")
         logger.info("=" * 60)
-        logger.info(f"Pages crawled:      {self.stats['pages_crawled']}")
-        logger.info(f"Images found:       {self.stats['images_found']}")
-        logger.info(f"Images downloaded:  {self.stats['images_downloaded']}")
-        logger.info(f"Duplicates skipped: {self.stats['duplicates_skipped']}")
-        logger.info(f"Errors:             {self.stats['errors']}")
+        logger.info(f"Pages crawled:       {self.stats['pages_crawled']}")
+        logger.info(f"Images found:        {self.stats['images_found']}")
+        logger.info(f"Images downloaded:   {self.stats['images_downloaded']}")
+        logger.info(f"Duplicates skipped:  {self.stats['duplicates_skipped']}")
+        logger.info(f"Filtered (unwanted): {self.stats['filtered_unwanted']}")
+        logger.info(f"Errors:              {self.stats['errors']}")
         logger.info("=" * 60)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Download images from web pages with advanced features'
+        description='Download images from web pages with smart content filtering'
     )
     parser.add_argument('url', help='Starting URL')
     parser.add_argument('--out', default='./images', help='Output directory')
@@ -413,8 +481,11 @@ def main():
     parser.add_argument('--timeout', type=int, default=20, help='Request timeout (seconds)')
     parser.add_argument('--parse-css', action='store_true', help='Parse CSS for background images')
     parser.add_argument('--compress', action='store_true', help='Compress images (JPEG, quality=85)')
-    parser.add_argument('--perceptual-hash', action='store_true', help='Use perceptual hashing for deduplication')
+    parser.add_argument('--perceptual-hash', action='store_true', help='Use perceptual hashing')
     parser.add_argument('--max-size', type=int, default=50, help='Max image size in MB')
+    parser.add_argument('--min-width', type=int, default=200, help='Minimum image width (pixels)')
+    parser.add_argument('--min-height', type=int, default=150, help='Minimum image height (pixels)')
+    parser.add_argument('--no-content-filter', action='store_true', help='Disable content-only filtering')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose logging')
     
     args = parser.parse_args()
@@ -433,7 +504,10 @@ def main():
         parse_css=args.parse_css,
         compress=args.compress,
         perceptual_hash=args.perceptual_hash,
-        max_size_mb=args.max_size
+        max_size_mb=args.max_size,
+        min_width=args.min_width,
+        min_height=args.min_height,
+        content_only=not args.no_content_filter
     )
     
     downloader.download_from_url(
