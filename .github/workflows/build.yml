@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Tkinter GUI
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install pyinstaller requests beautifulsoup4 lxml Pillow selenium streamlit
+        pip install pyinstaller requests beautifulsoup4 lxml Pillow selenium
     
     - name: Download FFmpeg
       shell: pwsh
@@ -28,137 +28,90 @@ jobs:
         Expand-Archive -Path ffmpeg.zip
         Copy-Item "ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "."
     
-    - name: Create PyInstaller Spec
+    - name: Download ChromeDriver
       shell: pwsh
       run: |
-        @"
-        # -*- mode: python ; coding: utf-8 -*-
-        import sys
-        from PyInstaller.utils.hooks import collect_all
-
-        block_cipher = None
-
-        datas = []
-        binaries = []
-        hiddenimports = []
-
-        # Collect all Streamlit files
-        tmp_ret = collect_all('streamlit')
-        datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
-        # Add project files
-        datas += [
-            ('ui.py', '.'),
-            ('grab_images.py', '.'),
-            ('video_downloader.py', '.'),
-        ]
-
-        # Add FFmpeg binary
-        binaries += [('ffmpeg.exe', '.')]
-
-        # Additional hidden imports
-        hiddenimports += [
-            'streamlit.runtime.scriptrunner.magic_funcs',
-            'streamlit.web.cli',
-        ]
-
-        a = Analysis(
-            ['launcher.py'],
-            pathex=[],
-            binaries=binaries,
-            datas=datas,
-            hiddenimports=hiddenimports,
-            hookspath=[],
-            hooksconfig={},
-            runtime_hooks=[],
-            excludes=[],
-            win_no_prefer_redirects=False,
-            win_private_assemblies=False,
-            cipher=block_cipher,
-            noarchive=False,
-        )
-
-        pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
-        exe = EXE(
-            pyz,
-            a.scripts,
-            a.binaries,
-            a.zipfiles,
-            a.datas,
-            [],
-            name='MediaDownloader',
-            debug=False,
-            bootloader_ignore_signals=False,
-            strip=False,
-            upx=True,
-            upx_exclude=[],
-            runtime_tmpdir=None,
-            console=True,
-            disable_windowed_traceback=False,
-            argv_emulation=False,
-            target_arch=None,
-            codesign_identity=None,
-            entitlements_file=None,
-        )
-        "@ | Out-File -FilePath MediaDownloader.spec -Encoding UTF8
+        Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.204/win64/chromedriver-win64.zip" -OutFile "chromedriver.zip"
+        Expand-Archive -Path chromedriver.zip
+        Copy-Item "chromedriver-win64\chromedriver.exe" "."
     
-    - name: Build EXE
+    - name: Build grab_images.exe
       run: |
-        pyinstaller MediaDownloader.spec
+        pyinstaller --onefile --console --name grab_images grab_images.py
+    
+    - name: Build video_downloader.exe
+      run: |
+        pyinstaller --onefile --console --add-binary "chromedriver.exe;." --name video_downloader video_downloader.py
+    
+    - name: Build GUI (MediaDownloader.exe)
+      run: |
+        pyinstaller --onefile --windowed --name MediaDownloader gui_launcher.py
     
     - name: Create Package
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Path Release
-        Copy-Item dist\MediaDownloader.exe Release\
+        New-Item -ItemType Directory -Path MediaDownloader
+        Copy-Item dist\MediaDownloader.exe MediaDownloader\
+        Copy-Item dist\grab_images.exe MediaDownloader\
+        Copy-Item dist\video_downloader.exe MediaDownloader\
+        Copy-Item ffmpeg.exe MediaDownloader\
+        Copy-Item chromedriver.exe MediaDownloader\
         
         @"
-        ═══════════════════════════════════════════════════════
+        ═══════════════════════════════════════════════════════════
                     MEDIA DOWNLOADER v1.0
-        ═══════════════════════════════════════════════════════
+                       Tkinter GUI Edition
+        ═══════════════════════════════════════════════════════════
 
         QUICK START:
         ------------
         1. Double-click MediaDownloader.exe
-        2. Wait 5-10 seconds
-        3. Browser opens automatically with the interface
-        4. Paste URL and click Run!
+        2. Enter URL
+        3. Select options (Images/Videos)
+        4. Click RUN
+        5. Done!
 
         FEATURES:
         ---------
-        ✓ Download videos (MP4 + HLS → MP4 conversion)
-        ✓ Download images
+        ✓ Download videos (MP4 + HLS conversion)
+        ✓ Download images  
+        ✓ Simple GUI interface
         ✓ No Python installation required
         ✓ Fully portable
 
-        TROUBLESHOOTING:
-        ----------------
-        "Multiple windows opening"
-        → Fixed in this version!
-
-        "Browser doesn't open"
-        → Manually go to: http://localhost:8501
-
-        "Antivirus blocks it"
-        → This is a false positive (PyInstaller common issue)
-        → Allow the file in your antivirus
-
-        SYSTEM REQUIREMENTS:
-        --------------------
+        REQUIREMENTS:
+        -------------
         - Windows 10/11
-        - 4GB RAM minimum
-        - Internet connection (to download media)
+        - For JavaScript rendering: Chrome browser
 
-        ═══════════════════════════════════════════════════════
+        FILES:
+        ------
+        MediaDownloader.exe     Main GUI program
+        grab_images.exe         Image downloader
+        video_downloader.exe    Video downloader
+        ffmpeg.exe             Video converter
+        chromedriver.exe       JS rendering
+
+        IMPORTANT:
+        ----------
+        Keep all files in the same folder!
+        Do not separate MediaDownloader.exe from other files.
+
+        USAGE:
+        ------
+        Double-click MediaDownloader.exe and follow the GUI.
+        All other files work automatically in the background.
+
+        ═══════════════════════════════════════════════════════════
         GitHub: github.com/rasitsahinn/media-downloader
-        ═══════════════════════════════════════════════════════
-        "@ | Out-File -FilePath Release\README.txt -Encoding UTF8
+        ═══════════════════════════════════════════════════════════
+        "@ | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
         
-        Compress-Archive -Path Release\* -DestinationPath MediaDownloader-Windows.zip
+        Compress-Archive -Path MediaDownloader\* -DestinationPath MediaDownloader-Windows.zip
     
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: MediaDownloader-Windows
         path: MediaDownloader-Windows.zip
+```
