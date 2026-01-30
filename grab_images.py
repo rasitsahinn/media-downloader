@@ -835,30 +835,6 @@ Examples:
 
 if __name__ == '__main__':
     main()
-```
 
----
 
-## **YENİ ÖZELLİKLER ÖZET:**
 
-### ✅ **Eklenen:**
-
-1. **Robots.txt** - Etik scraping
-2. **Retry Logic** - 3 deneme + exponential backoff
-3. **User-Agent Rotation** - 5 farklı UA
-4. **Progress Callback** - GUI entegrasyonu
-5. **Organize Output** - Domain/tarih klasörleme
-6. **Metadata Extraction** - JSON metadata
-7. **Thumbnail Generation** - 200x200 preview
-8. **Batch Mode** - Dosyadan URL listesi
-9. **JSON Report** - download_report.json
-10. **Gelişmiş Error Handling** - Timeout/404/403 ayrımı
-
-### 📊 **Yeni İstatistikler:**
-```
-errors_timeout
-errors_connection
-errors_404
-errors_403
-errors_robots
-filtered_size
