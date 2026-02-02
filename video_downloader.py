@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 video_downloader.py - Standalone video downloader from web pages
-Downloads MP4 videos and converts HLS streams (.m3u8) to MP4 from a given URL.
-NOW WITH DAILYMOTION SUPPORT!
+Downloads MP4 videos and converts HLS (.m3u8) and DASH (.mpd) streams to MP4
+NOW WITH DAILYMOTION DASH SUPPORT!
 """
 
 import argparse
@@ -41,10 +41,10 @@ except ImportError:
 
 # Constants
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-VIDEO_EXTENSIONS = {'.mp4', '.m3u8'}
+VIDEO_EXTENSIONS = {'.mp4', '.m3u8', '.mpd', '.m4s'}  # Added DASH support
 NOISE_PATTERNS = ['icon', 'sprite', 'favicon', 'logo', 'button', 'arrow']
 MIN_VIDEO_SIZE = 50 * 1024  # 50KB
-HLS_TIMEOUT = 600  # 10 minutes for HLS conversion
+STREAM_TIMEOUT = 600  # 10 minutes for stream conversion
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -114,8 +114,8 @@ class VideoDownloader:
         self.ffmpeg_available = self.ffmpeg_path is not None
         if not self.ffmpeg_available:
             logger.warning("FFmpeg not found in PATH")
-            logger.warning("HLS streams will only be detected and logged, not converted to MP4")
-            logger.warning("Install FFmpeg to enable automatic HLS to MP4 conversion")
+            logger.warning("Streaming videos will only be detected and logged, not converted to MP4")
+            logger.warning("Install FFmpeg to enable automatic conversion")
         
         # Check Selenium availability
         self.selenium_available = SELENIUM_AVAILABLE
@@ -136,6 +136,8 @@ class VideoDownloader:
             'mp4_downloaded': 0,
             'hls_detected': 0,
             'hls_converted': 0,
+            'dash_detected': 0,
+            'dash_converted': 0,
             'failed': 0,
             'robots_blocked': 0,
             'dailymotion_extracted': 0
@@ -152,8 +154,8 @@ class VideoDownloader:
         if self.csv_path.stat().st_size == 0:
             self.csv_writer.writerow(['source_page', 'video_url', 'local_path', 'status', 'note'])
         
-        # HLS URLs file
-        self.hls_file_path = self.output_dir / 'hls_urls.txt'
+        # Stream URLs file
+        self.stream_file_path = self.output_dir / 'stream_urls.txt'
 
     def find_ffmpeg(self) -> Optional[str]:
         """Find FFmpeg executable"""
@@ -237,7 +239,7 @@ class VideoDownloader:
     def extract_dailymotion_video_url(self, embed_url: str) -> Optional[str]:
         """
         Extract real video URL from Dailymotion embed
-        NEW: Added Dailymotion support!
+        Supports: HLS (.m3u8), DASH (.mpd), MP4
         """
         try:
             # Extract video ID
@@ -254,7 +256,7 @@ class VideoDownloader:
             response = self.session.get(embed_page_url, timeout=10)
             response.raise_for_status()
             
-            # Look for m3u8 URL (HLS stream)
+            # Strategy 1: Look for HLS (.m3u8)
             m3u8_match = re.search(r'"(https://[^"]+\.m3u8[^"]*)"', response.text)
             if m3u8_match:
                 video_url = m3u8_match.group(1).replace('\\/', '/')
@@ -262,7 +264,25 @@ class VideoDownloader:
                 self.stats['dailymotion_extracted'] += 1
                 return video_url
             
-            # Look for mp4 URL (direct)
+            # Strategy 2: Look for DASH manifest (.mpd)
+            mpd_match = re.search(r'"(https://[^"]+\.mpd[^"]*)"', response.text)
+            if mpd_match:
+                video_url = mpd_match.group(1).replace('\\/', '/')
+                logger.info(f"✓ Found Dailymotion DASH: {video_url[:60]}...")
+                self.stats['dailymotion_extracted'] += 1
+                return video_url
+            
+            # Strategy 3: Look for .m4s segments and construct .mpd URL
+            m4s_match = re.search(r'"(https://[^"]+/video/\d+\.m4s[^"]*)"', response.text)
+            if m4s_match:
+                m4s_url = m4s_match.group(1).replace('\\/', '/')
+                # Convert: .../video/1719.m4s → .../manifest.mpd
+                mpd_url = re.sub(r'/video/\d+\.m4s.*', '/manifest.mpd', m4s_url)
+                logger.info(f"✓ Found Dailymotion DASH (via .m4s): {mpd_url[:60]}...")
+                self.stats['dailymotion_extracted'] += 1
+                return mpd_url
+            
+            # Strategy 4: Look for MP4 (fallback)
             mp4_match = re.search(r'"(https://[^"]+\.mp4[^"]*)"', response.text)
             if mp4_match:
                 video_url = mp4_match.group(1).replace('\\/', '/')
@@ -280,7 +300,7 @@ class VideoDownloader:
     def discover_from_html(self, html: str, page_url: str) -> Set[str]:
         """
         Discover video URLs from HTML
-        UPDATED: Now includes Dailymotion iframe extraction!
+        Supports: Direct videos, HLS, DASH, Dailymotion embeds
         """
         videos = set()
         soup = BeautifulSoup(html, 'html.parser')
@@ -296,7 +316,7 @@ class VideoDownloader:
                 if src:
                     videos.add(urljoin(page_url, src))
         
-        # 2. <iframe> embeds (NEW: Dailymotion extraction!)
+        # 2. <iframe> embeds (Dailymotion extraction)
         for iframe in soup.find_all('iframe'):
             src = iframe.get('src')
             if not src:
@@ -318,8 +338,15 @@ class VideoDownloader:
         # 4. Scan all URLs in page for video extensions
         all_urls = re.findall(r'https?://[^\s"\'<>]+', html)
         for url in all_urls:
-            if any(ext in url.lower() for ext in VIDEO_EXTENSIONS):
+            url_lower = url.lower()
+            if any(ext in url_lower for ext in VIDEO_EXTENSIONS):
                 videos.add(url)
+        
+        # 5. Look specifically for DASH manifests (.mpd)
+        mpd_pattern = r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?'
+        mpd_urls = re.findall(mpd_pattern, html, re.IGNORECASE)
+        for mpd_url in mpd_urls:
+            videos.add(mpd_url)
         
         return videos
 
@@ -454,26 +481,31 @@ class VideoDownloader:
                 output_path.unlink()
             return False, str(e)
 
-    def download_hls_with_ffmpeg(self, m3u8_url: str, output_path: Path) -> Tuple[bool, str]:
-        """Convert HLS stream to MP4"""
+    def download_stream_with_ffmpeg(self, stream_url: str, output_path: Path, stream_type: str = "HLS") -> Tuple[bool, str]:
+        """
+        Convert HLS or DASH stream to MP4
+        Works for both .m3u8 (HLS) and .mpd (DASH)
+        """
         if not self.ffmpeg_available:
             return False, 'FFmpeg not available'
         
         try:
             cmd = [
                 self.ffmpeg_path,
-                '-i', m3u8_url,
+                '-i', stream_url,
                 '-c', 'copy',
                 '-bsf:a', 'aac_adtstoasc',
                 '-y',
                 str(output_path)
             ]
             
+            logger.info(f"Converting {stream_type} stream...")
+            
             result = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=HLS_TIMEOUT
+                timeout=STREAM_TIMEOUT
             )
             
             if result.returncode == 0 and output_path.exists():
@@ -482,7 +514,7 @@ class VideoDownloader:
                     output_path.unlink()
                     return False, f'File too small ({size} bytes)'
                 
-                logger.info(f"✓ Converted HLS: {output_path.name} ({size / 1024 / 1024:.1f} MB)")
+                logger.info(f"✓ Converted {stream_type}: {output_path.name} ({size / 1024 / 1024:.1f} MB)")
                 return True, f'{size} bytes'
             else:
                 error_output = result.stderr.decode('utf-8', errors='ignore')
@@ -501,10 +533,13 @@ class VideoDownloader:
         self.csv_writer.writerow([source_url, video_url, local_path, status, note])
         self.csv_file.flush()
 
-    def save_hls_url(self, url: str):
-        """Save HLS URL to text file"""
-        with open(self.hls_file_path, 'a', encoding='utf-8') as f:
-            f.write(f"{url}\n")
+    def save_stream_url(self, url: str, stream_type: str = ""):
+        """Save stream URL to text file"""
+        with open(self.stream_file_path, 'a', encoding='utf-8') as f:
+            if stream_type:
+                f.write(f"[{stream_type}] {url}\n")
+            else:
+                f.write(f"{url}\n")
 
     def process_video(self, video_url: str, source_url: str):
         """Process a single video URL"""
@@ -526,33 +561,55 @@ class VideoDownloader:
             self.log_to_csv(source_url, normalized, '', 'robots_blocked', '')
             return
         
-        # Determine if HLS or MP4
-        is_hls = '.m3u8' in normalized.lower()
+        # Determine video type
+        url_lower = normalized.lower()
+        is_hls = '.m3u8' in url_lower
+        is_dash = '.mpd' in url_lower or '.m4s' in url_lower
         
-        if is_hls:
+        if is_dash:
+            # DASH stream
             if self.ffmpeg_available:
-                # Convert HLS to MP4
+                output_path = self.get_output_path(normalized, source_url, force_mp4=True)
+                logger.info(f"Converting DASH: {normalized}")
+                
+                success, note = self.download_stream_with_ffmpeg(normalized, output_path, "DASH")
+                
+                if success:
+                    self.stats['dash_converted'] += 1
+                    self.log_to_csv(source_url, normalized, str(output_path), 'converted_dash', note)
+                else:
+                    self.stats['failed'] += 1
+                    self.save_stream_url(normalized, "DASH")
+                    self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
+            else:
+                logger.info(f"DASH detected (FFmpeg not available): {normalized}")
+                self.save_stream_url(normalized, "DASH")
+                self.log_to_csv(source_url, normalized, '', 'dash_detected', 'FFmpeg not available')
+                self.stats['dash_detected'] += 1
+        
+        elif is_hls:
+            # HLS stream
+            if self.ffmpeg_available:
                 output_path = self.get_output_path(normalized, source_url, force_mp4=True)
                 logger.info(f"Converting HLS: {normalized}")
                 
-                success, note = self.download_hls_with_ffmpeg(normalized, output_path)
+                success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
                 
                 if success:
                     self.stats['hls_converted'] += 1
-                    self.log_to_csv(source_url, normalized, str(output_path), 'converted', note)
+                    self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
                 else:
                     self.stats['failed'] += 1
-                    # Fallback: save URL to text file
-                    self.save_hls_url(normalized)
+                    self.save_stream_url(normalized, "HLS")
                     self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
             else:
-                # Just log HLS URLs (FFmpeg not available)
                 logger.info(f"HLS detected (FFmpeg not available): {normalized}")
-                self.save_hls_url(normalized)
+                self.save_stream_url(normalized, "HLS")
                 self.log_to_csv(source_url, normalized, '', 'hls_detected', 'FFmpeg not available')
                 self.stats['hls_detected'] += 1
+        
         else:
-            # Download MP4
+            # Direct MP4
             output_path = self.get_output_path(normalized, source_url)
             logger.info(f"Downloading MP4: {normalized}")
             
@@ -588,20 +645,18 @@ class VideoDownloader:
         # Discover videos using multiple strategies
         videos = set()
         
-        # Strategy 1: Advanced HTML parsing (always) - NOW WITH DAILYMOTION!
+        # Strategy 1: Advanced HTML parsing (always) - WITH DAILYMOTION & DASH!
         html_videos = self.discover_from_html(html, url)
         videos.update(html_videos)
         logger.info(f"HTML parsing found {len(html_videos)} video URLs")
         
         # Strategy 2: JavaScript rendering (if requested)
         if self.args.render_js:
-            # Try Selenium first (better for offline/standalone)
             if self.selenium_available:
                 logger.info("Using Selenium for JavaScript rendering...")
                 selenium_videos = self.discover_with_selenium(url)
                 videos.update(selenium_videos)
                 logger.info(f"Selenium found {len(selenium_videos)} additional videos")
-            # Fallback to Playwright if available
             elif self.playwright_available:
                 logger.info("Using Playwright for JavaScript rendering...")
                 playwright_videos = self.discover_with_playwright(url)
@@ -626,17 +681,20 @@ class VideoDownloader:
         print(f"Videos found:      {self.stats['found']}")
         print(f"MP4 downloaded:    {self.stats['mp4_downloaded']}")
         print(f"HLS converted:     {self.stats['hls_converted']}")
+        print(f"DASH converted:    {self.stats['dash_converted']}")
         print(f"HLS detected:      {self.stats['hls_detected']}")
+        print(f"DASH detected:     {self.stats['dash_detected']}")
         print(f"Dailymotion:       {self.stats['dailymotion_extracted']}")
         print(f"Failed:            {self.stats['failed']}")
         print(f"Robots blocked:    {self.stats['robots_blocked']}")
         print("="*60)
         
-        if self.stats['hls_detected'] > 0:
-            print(f"\nHLS URLs saved to: {self.hls_file_path}")
+        total_detected = self.stats['hls_detected'] + self.stats['dash_detected']
+        if total_detected > 0:
+            print(f"\nStream URLs saved to: {self.stream_file_path}")
             if not self.ffmpeg_available:
                 print("\nNote: FFmpeg is not installed or not in PATH")
-                print("Install FFmpeg to enable automatic HLS to MP4 conversion")
+                print("Install FFmpeg to enable automatic stream conversion")
                 print("  - Windows: Download from https://ffmpeg.org/ and add to PATH")
                 print("  - macOS: brew install ffmpeg")
                 print("  - Linux: sudo apt install ffmpeg (or equivalent)")
@@ -671,7 +729,7 @@ def setup_logging(verbose: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Download videos from web pages (MP4 + HLS conversion + Dailymotion)',
+        description='Download videos from web pages (MP4 + HLS + DASH + Dailymotion)',
         epilog='Example: %(prog)s "https://example.com/video-page" --render-js'
     )
     parser.add_argument('url', help='Page URL to scan for videos')
