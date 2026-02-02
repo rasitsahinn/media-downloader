@@ -136,7 +136,7 @@ jobs:
         $driverVersion = & ".\chromedriver.exe" --version
         
         # Create comprehensive README
-        @"
+        $readmeContent = @"
 ═══════════════════════════════════════════════════════════
                 MEDIA DOWNLOADER v2.0
            Tkinter GUI Edition with Portable Chrome
@@ -264,12 +264,14 @@ Check for updates:
 https://github.com/rasitsahinn/media-downloader/releases
 
 ═══════════════════════════════════════════════════════════
-Built: $(Get-Date -Format "yyyy-MM-dd HH:mm UTC")
+Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')
 Platform: Windows x64
 Python: 3.11
 GitHub: github.com/rasitsahinn/media-downloader
 ═══════════════════════════════════════════════════════════
-"@ | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
+"@
+        
+        $readmeContent | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
         
         Write-Host "✓ README.txt created" -ForegroundColor Green
         
