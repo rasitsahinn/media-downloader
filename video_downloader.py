@@ -2,6 +2,7 @@
 """
 video_downloader.py - Standalone video downloader from web pages
 Downloads MP4 videos and converts HLS streams (.m3u8) to MP4 from a given URL.
+NOW WITH DAILYMOTION SUPPORT!
 """
 
 import argparse
@@ -136,7 +137,8 @@ class VideoDownloader:
             'hls_detected': 0,
             'hls_converted': 0,
             'failed': 0,
-            'robots_blocked': 0
+            'robots_blocked': 0,
+            'dailymotion_extracted': 0
         }
         
         # Setup output directory
@@ -202,425 +204,296 @@ class VideoDownloader:
     def normalize_url(self, url: str) -> str:
         """Normalize URL: remove fragment, keep query string"""
         parsed = urlparse(url)
-        return urlunparse(parsed._replace(fragment=''))
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, ''))
 
-    def is_video_url(self, url: str) -> bool:
-        """Check if URL looks like a video"""
-        url_lower = url.lower()
-        # Check extension
-        path = urlparse(url).path.lower()
-        if any(path.endswith(ext) for ext in VIDEO_EXTENSIONS):
+    def check_robots(self, url: str, is_media_file: bool = False) -> bool:
+        """Check robots.txt (skip for direct media files)"""
+        if self.args.ignore_robots:
             return True
-        # Check in full URL (with query string)
-        if any(ext in url_lower for ext in VIDEO_EXTENSIONS):
+        
+        # Always allow direct media files
+        if is_media_file:
             return True
-        return False
+        
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        
+        try:
+            parser = self.robots_cache.get_parser(base_url)
+            can_fetch = parser.can_fetch(USER_AGENT, url)
+            if not can_fetch:
+                logger.warning(f"Blocked by robots.txt: {url}")
+                self.stats['robots_blocked'] += 1
+            return can_fetch
+        except Exception as e:
+            logger.warning(f"robots.txt check failed: {e}")
+            return True
 
     def is_noise(self, url: str) -> bool:
-        """Filter out common UI assets unless they're video files"""
-        if self.is_video_url(url):
-            return False
+        """Check if URL looks like a noise file"""
         url_lower = url.lower()
         return any(pattern in url_lower for pattern in NOISE_PATTERNS)
 
-    def discover_from_html(self, html: str, base_url: str) -> Set[str]:
-        """Parse HTML and extract video URLs with advanced techniques"""
-        videos = set()
-        
+    def extract_dailymotion_video_url(self, embed_url: str) -> Optional[str]:
+        """
+        Extract real video URL from Dailymotion embed
+        NEW: Added Dailymotion support!
+        """
         try:
-            soup = BeautifulSoup(html, 'html.parser')
+            # Extract video ID
+            match = re.search(r'video[=/]([a-zA-Z0-9]+)', embed_url)
+            if not match:
+                logger.warning(f"Could not extract Dailymotion video ID from: {embed_url}")
+                return None
             
-            # 1. Check <video> and <source> tags
-            for tag in soup.find_all(['video', 'source']):
-                if tag.get('src'):
-                    url = urljoin(base_url, tag['src'])
-                    if self.is_video_url(url):
-                        videos.add(url)
+            video_id = match.group(1)
+            logger.info(f"🎬 Dailymotion video ID: {video_id}")
             
-            # 2. Scan all attributes for video URLs
-            video_attrs = [
-                'data-oembed-url', 'data-src', 'data-video', 'data-url',
-                'data-embed-url', 'content', 'href', 'data-video-src',
-                'data-mp4', 'data-hls', 'data-file', 'data-playlist'
-            ]
+            # Fetch embed page
+            embed_page_url = f"https://www.dailymotion.com/embed/video/{video_id}"
+            response = self.session.get(embed_page_url, timeout=10)
+            response.raise_for_status()
             
-            for tag in soup.find_all(True):
-                for attr, value in tag.attrs.items():
-                    if isinstance(value, str):
-                        if 'http' in value and self.is_video_url(value):
-                            url = urljoin(base_url, value)
-                            videos.add(url)
-                    elif isinstance(value, list):
-                        for v in value:
-                            if isinstance(v, str) and 'http' in v and self.is_video_url(v):
-                                url = urljoin(base_url, v)
-                                videos.add(url)
+            # Look for m3u8 URL (HLS stream)
+            m3u8_match = re.search(r'"(https://[^"]+\.m3u8[^"]*)"', response.text)
+            if m3u8_match:
+                video_url = m3u8_match.group(1).replace('\\/', '/')
+                logger.info(f"✓ Found Dailymotion HLS: {video_url[:60]}...")
+                self.stats['dailymotion_extracted'] += 1
+                return video_url
             
-            # 3. Parse <script> tags for embedded video URLs
-            for script in soup.find_all('script'):
-                script_text = script.string or ''
-                
-                # Advanced patterns for video URLs in JavaScript
-                patterns = [
-                    r'["\'](https?://[^"\']*\.m3u8[^"\']*)["\']',
-                    r'["\'](https?://[^"\']*\.mp4[^"\']*)["\']',
-                    r'videoUrl["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                    r'hlsUrl["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                    r'src["\']?\s*[:=]\s*["\']([^"\']+\.mp4[^"\']*)["\']',
-                    r'file["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                    r'playlist["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                    r'source["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                    r'mp4["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                    r'hls["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-                ]
-                
-                for pattern in patterns:
-                    for match in re.findall(pattern, script_text, re.IGNORECASE):
-                        if self.is_video_url(match):
-                            full_url = urljoin(base_url, match)
-                            videos.add(full_url)
+            # Look for mp4 URL (direct)
+            mp4_match = re.search(r'"(https://[^"]+\.mp4[^"]*)"', response.text)
+            if mp4_match:
+                video_url = mp4_match.group(1).replace('\\/', '/')
+                logger.info(f"✓ Found Dailymotion MP4: {video_url[:60]}...")
+                self.stats['dailymotion_extracted'] += 1
+                return video_url
             
-            # 4. Parse JSON-LD structured data
-            for script in soup.find_all('script', type='application/ld+json'):
-                try:
-                    data = json.loads(script.string)
-                    # Handle both single objects and arrays
-                    items = data if isinstance(data, list) else [data]
-                    for item in items:
-                        if isinstance(item, dict):
-                            # Check common video properties
-                            for key in ['contentUrl', 'embedUrl', 'url', 'videoUrl']:
-                                if key in item and self.is_video_url(str(item[key])):
-                                    videos.add(item[key])
-                except Exception as e:
-                    logger.debug(f"Failed to parse JSON-LD: {e}")
-        
+            logger.warning(f"Could not extract video URL for Dailymotion {video_id}")
+            return None
+            
         except Exception as e:
-            logger.error(f"Error parsing HTML: {e}")
+            logger.error(f"Dailymotion extraction error: {e}")
+            return None
+
+    def discover_from_html(self, html: str, page_url: str) -> Set[str]:
+        """
+        Discover video URLs from HTML
+        UPDATED: Now includes Dailymotion iframe extraction!
+        """
+        videos = set()
+        soup = BeautifulSoup(html, 'html.parser')
         
-        # 5. Regex scan for video URLs in raw HTML
-        pattern = r'https?://[^\s"\'>]+\.(?:mp4|m3u8)(?:\?[^\s"\'>]*)?'
-        for match in re.finditer(pattern, html, re.IGNORECASE):
-            url = match.group(0)
-            videos.add(url)
+        # 1. <video> tags
+        for video in soup.find_all('video'):
+            src = video.get('src')
+            if src:
+                videos.add(urljoin(page_url, src))
+            
+            for source in video.find_all('source'):
+                src = source.get('src')
+                if src:
+                    videos.add(urljoin(page_url, src))
+        
+        # 2. <iframe> embeds (NEW: Dailymotion extraction!)
+        for iframe in soup.find_all('iframe'):
+            src = iframe.get('src')
+            if not src:
+                continue
+            
+            # Check if Dailymotion
+            if 'dailymotion.com' in src or 'geo.dailymotion.com' in src:
+                logger.info(f"🔍 Found Dailymotion iframe: {src[:60]}...")
+                real_url = self.extract_dailymotion_video_url(src)
+                if real_url:
+                    videos.add(real_url)
+        
+        # 3. data-src attributes
+        for tag in soup.find_all(attrs={'data-src': True}):
+            src = tag['data-src']
+            if any(ext in src.lower() for ext in VIDEO_EXTENSIONS):
+                videos.add(urljoin(page_url, src))
+        
+        # 4. Scan all URLs in page for video extensions
+        all_urls = re.findall(r'https?://[^\s"\'<>]+', html)
+        for url in all_urls:
+            if any(ext in url.lower() for ext in VIDEO_EXTENSIONS):
+                videos.add(url)
         
         return videos
 
-    def discover_with_selenium(self, url: str) -> Set[str]:
-        """Use Selenium to capture network requests"""
-        if not self.selenium_available or not self.chromedriver_path:
-            logger.warning("Selenium not available, skipping JS rendering")
-            return set()
-        
+    def discover_with_selenium(self, page_url: str) -> Set[str]:
+        """Discover videos using Selenium"""
         videos = set()
         
-        try:
-            logger.info("Starting Selenium (Chrome)...")
-            
-            # Chrome options
-            chrome_options = Options()
-            chrome_options.add_argument('--headless')
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--disable-dev-shm-usage')
-            chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--log-level=3')
-            chrome_options.add_argument(f'--user-agent={USER_AGENT}')
-            
-            # Enable performance logging
-            chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-            
-            service = Service(self.chromedriver_path)
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            logger.info(f"Loading page with Chrome: {url}")
-            driver.get(url)
-            
-            # Wait for page to load (adjustable)
-            wait_time = self.args.js_wait if hasattr(self.args, 'js_wait') else 5
-            time.sleep(wait_time)
-            
-            # Get performance logs
-            logs = driver.get_log('performance')
-            logger.info(f"Processing {len(logs)} network log entries...")
-            
-            for entry in logs:
-                try:
-                    log = json.loads(entry['message'])['message']
-                    
-                    # Look for Network.responseReceived events
-                    if log.get('method') == 'Network.responseReceived':
-                        params = log.get('params', {})
-                        response = params.get('response', {})
-                        response_url = response.get('url', '')
-                        mime_type = response.get('mimeType', '')
-                        
-                        # Check if it's a video URL
-                        if self.is_video_url(response_url):
-                            videos.add(response_url)
-                        # Check by content type
-                        elif 'video' in mime_type or 'mpegurl' in mime_type or 'application/vnd.apple' in mime_type:
-                            videos.add(response_url)
-                
-                except Exception as e:
-                    logger.debug(f"Failed to parse log entry: {e}")
-            
-            driver.quit()
-            logger.info(f"Selenium found {len(videos)} video URLs")
+        if not self.selenium_available:
+            return videos
         
+        driver = None
+        try:
+            options = Options()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            
+            if self.chromedriver_path:
+                service = Service(executable_path=self.chromedriver_path)
+                driver = webdriver.Chrome(service=service, options=options)
+            else:
+                driver = webdriver.Chrome(options=options)
+            
+            driver.get(page_url)
+            time.sleep(self.args.js_wait)
+            
+            rendered_html = driver.page_source
+            videos = self.discover_from_html(rendered_html, page_url)
+            
         except Exception as e:
             logger.error(f"Selenium error: {e}")
-            logger.error("Make sure Chrome browser is installed on this system")
+        finally:
+            if driver:
+                driver.quit()
         
         return videos
 
-    def discover_with_playwright(self, url: str) -> Set[str]:
-        """Use Playwright to capture network requests"""
-        if not self.playwright_available:
-            logger.warning("Playwright not available, skipping JS rendering")
-            return set()
-        
+    def discover_with_playwright(self, page_url: str) -> Set[str]:
+        """Discover videos using Playwright"""
         videos = set()
         
+        if not self.playwright_available:
+            return videos
+        
         try:
-            logger.info("Starting Playwright (Chromium)...")
-            
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(user_agent=USER_AGENT)
-                page = context.new_page()
+                page = browser.new_page()
+                page.goto(page_url)
+                page.wait_for_timeout(self.args.js_wait * 1000)
                 
-                # Capture network responses
-                def handle_response(response):
-                    try:
-                        url = response.url
-                        if self.is_video_url(url):
-                            videos.add(url)
-                        else:
-                            content_type = response.headers.get('content-type', '')
-                            if content_type.startswith('video/') or \
-                               content_type.startswith('application/vnd.apple.mpegurl'):
-                                videos.add(url)
-                    except Exception:
-                        pass
-                
-                page.on('response', handle_response)
-                page.goto(url, wait_until='networkidle', timeout=30000)
+                rendered_html = page.content()
+                videos = self.discover_from_html(rendered_html, page_url)
                 
                 browser.close()
-            
-            logger.info(f"Playwright found {len(videos)} video URLs")
-        
         except Exception as e:
             logger.error(f"Playwright error: {e}")
         
         return videos
 
-    def check_robots(self, url: str, is_media_file: bool = False) -> bool:
-        """
-        Check if URL is allowed by robots.txt
-        
-        Args:
-            url: URL to check
-            is_media_file: True if this is a direct media file (video/audio), not a page to crawl
-        
-        Returns:
-            True if allowed, False if blocked
-        """
-        if self.args.ignore_robots:
-            return True
-        
-        # robots.txt is designed for web crawling/scraping prevention
-        # Direct media file downloads are not crawling - they are resource fetching
-        # This is similar to how browsers load videos - they don't check robots.txt for media
-        if is_media_file:
-            # Check if it's actually a media file by extension
-            media_extensions = ['.mp4', '.m3u8', '.ts', '.mp3', '.webm', '.avi', '.mov', '.flv', '.mkv']
-            if any(ext in url.lower() for ext in media_extensions):
-                logger.debug(f"Direct media file - bypassing robots.txt check: {url}")
-                return True
-        
-        parsed = urlparse(url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
-        parser = self.robots_cache.get_parser(base_url)
-        
-        allowed = parser.can_fetch(USER_AGENT, url)
-        if not allowed:
-            logger.warning(f"Blocked by robots.txt: {url}")
-            self.stats['robots_blocked'] += 1
-        return allowed
-
     def get_output_path(self, video_url: str, source_url: str, force_mp4: bool = False) -> Path:
-        """Generate output path for video"""
+        """Generate output filename"""
         parsed = urlparse(video_url)
-        domain = parsed.netloc.replace(':', '_')
+        filename = os.path.basename(parsed.path)
         
-        # Get first 3 path segments
-        path_parts = [p for p in parsed.path.split('/') if p][:3]
-        subdir = '_'.join(path_parts) if path_parts else 'root'
+        # Clean filename
+        filename = re.sub(r'[^\w\-.]', '_', filename)
         
-        # Create directory
-        out_dir = self.output_dir / domain / subdir
-        out_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate filename
-        path = parsed.path
-        if path.endswith('.mp4'):
-            filename = Path(path).name
-        elif path.endswith('.m3u8') and force_mp4:
-            # Convert .m3u8 to .mp4 for HLS downloads
-            filename = Path(path).stem + '.mp4'
-        elif path.endswith('.m3u8'):
-            filename = Path(path).name
-        else:
-            # Generate from URL hash
+        if not filename or filename == '_':
             url_hash = hashlib.md5(video_url.encode()).hexdigest()[:8]
             filename = f"video_{url_hash}.mp4"
         
-        # Sanitize filename
-        filename = re.sub(r'[^\w\-_\.]', '_', filename)
+        if force_mp4 and not filename.endswith('.mp4'):
+            filename = os.path.splitext(filename)[0] + '.mp4'
         
-        # Avoid overwriting
-        base_path = out_dir / filename
-        if base_path.exists() and base_path not in self.downloaded_urls:
-            stem = base_path.stem
-            ext = base_path.suffix
-            counter = 1
-            while (out_dir / f"{stem}_{counter}{ext}").exists():
-                counter += 1
-            base_path = out_dir / f"{stem}_{counter}{ext}"
+        output_path = self.output_dir / filename
         
-        return base_path
+        # Handle duplicates
+        counter = 1
+        while output_path.exists():
+            name, ext = os.path.splitext(filename)
+            output_path = self.output_dir / f"{name}_{counter}{ext}"
+            counter += 1
+        
+        return output_path
 
-    def download_mp4(self, url: str, output_path: Path) -> Tuple[bool, str]:
-        """Download MP4 file with streaming and resume support"""
-        domain = urlparse(url).netloc
-        self.rate_limiter.wait(domain)
-        
-        # Check for partial download
-        resume_pos = 0
-        mode = 'wb'
-        headers = {
-            'Referer': self.source_url  # Add referer - look like browser request
-        }
-        
-        if output_path.exists():
-            resume_pos = output_path.stat().st_size
-            headers['Range'] = f'bytes={resume_pos}-'
-            mode = 'ab'
-            logger.info(f"Resuming download from byte {resume_pos}")
-        
-        for attempt in range(self.args.retries):
-            try:
-                response = self.session.get(
-                    url,
-                    stream=True,
-                    timeout=self.args.timeout,
-                    auth=self.auth,
-                    headers=headers
-                )
-                
-                # Check if resume was accepted
-                if resume_pos > 0 and response.status_code != 206:
-                    logger.warning("Server doesn't support resume, starting over")
-                    resume_pos = 0
-                    mode = 'wb'
-                    headers = {'Referer': self.source_url}
-                    response = self.session.get(
-                        url,
-                        stream=True,
-                        timeout=self.args.timeout,
-                        auth=self.auth,
-                        headers=headers
-                    )
-                
-                response.raise_for_status()
-                
-                # Check Content-Length
-                content_length = response.headers.get('Content-Length')
-                if content_length:
-                    total_size = int(content_length)
-                    if resume_pos == 0 and total_size < MIN_VIDEO_SIZE:
-                        return False, f"File too small: {total_size} bytes"
-                
-                # Download with streaming
-                with open(output_path, mode) as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                
-                logger.info(f"Downloaded: {output_path}")
-                return True, "success"
+    def download_mp4(self, video_url: str, output_path: Path) -> Tuple[bool, str]:
+        """Download MP4 video"""
+        try:
+            domain = urlparse(video_url).netloc
+            self.rate_limiter.wait(domain)
             
-            except Exception as e:
-                logger.warning(f"Download attempt {attempt + 1} failed: {e}")
-                if attempt == self.args.retries - 1:
-                    return False, str(e)
-                time.sleep(2 ** attempt)
-        
-        return False, "Max retries exceeded"
+            headers = {
+                'Referer': self.source_url,
+                'User-Agent': USER_AGENT
+            }
+            
+            for attempt in range(self.args.retries):
+                try:
+                    response = self.session.get(
+                        video_url,
+                        headers=headers,
+                        timeout=self.args.timeout,
+                        stream=True,
+                        auth=self.auth
+                    )
+                    response.raise_for_status()
+                    
+                    with open(output_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    size = output_path.stat().st_size
+                    if size < MIN_VIDEO_SIZE:
+                        output_path.unlink()
+                        return False, f'File too small ({size} bytes)'
+                    
+                    logger.info(f"✓ Downloaded: {output_path.name} ({size / 1024 / 1024:.1f} MB)")
+                    return True, f'{size} bytes'
+                    
+                except Exception as e:
+                    if attempt == self.args.retries - 1:
+                        raise
+                    time.sleep(2 ** attempt)
+            
+            return False, 'Max retries exceeded'
+            
+        except Exception as e:
+            if output_path.exists():
+                output_path.unlink()
+            return False, str(e)
 
     def download_hls_with_ffmpeg(self, m3u8_url: str, output_path: Path) -> Tuple[bool, str]:
-        """Download and convert HLS stream to MP4 using FFmpeg"""
+        """Convert HLS stream to MP4"""
         if not self.ffmpeg_available:
-            return False, "FFmpeg not available"
-        
-        logger.info(f"Converting HLS to MP4: {m3u8_url}")
-        logger.info(f"Output: {output_path}")
-        
-        # Build FFmpeg command
-        cmd = [
-            self.ffmpeg_path,
-            '-i', m3u8_url,
-            '-c', 'copy',  # Copy streams without re-encoding (fast)
-            '-bsf:a', 'aac_adtstoasc',  # Fix AAC headers
-            '-y',  # Overwrite output file
-            '-loglevel', 'warning',  # Less verbose
-            str(output_path)
-        ]
-        
-        # Add headers if needed (referer and cookies)
-        header_string = f'Referer: {self.source_url}\r\n'
-        if self.args.cookies:
-            header_string += f'Cookie: {self.args.cookies}\r\n'
-        
-        cmd.insert(1, '-headers')
-        cmd.insert(2, header_string)
+            return False, 'FFmpeg not available'
         
         try:
-            logger.debug(f"FFmpeg command: {' '.join(cmd)}")
+            cmd = [
+                self.ffmpeg_path,
+                '-i', m3u8_url,
+                '-c', 'copy',
+                '-bsf:a', 'aac_adtstoasc',
+                '-y',
+                str(output_path)
+            ]
             
             result = subprocess.run(
                 cmd,
-                capture_output=True,
-                timeout=HLS_TIMEOUT,
-                text=True
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=HLS_TIMEOUT
             )
             
-            if result.returncode == 0:
-                # Check if file was created and has reasonable size
-                if output_path.exists() and output_path.stat().st_size > MIN_VIDEO_SIZE:
-                    logger.info(f"HLS conversion successful: {output_path}")
-                    return True, "converted"
-                else:
-                    logger.error(f"FFmpeg completed but output file is invalid")
-                    return False, "Invalid output file"
-            else:
-                error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-                logger.error(f"FFmpeg failed: {error_msg}")
-                return False, f"FFmpeg error: {error_msg[:100]}"
-        
-        except subprocess.TimeoutExpired:
-            logger.error(f"FFmpeg timeout after {HLS_TIMEOUT}s")
-            # Try to kill ffmpeg process
-            try:
-                if output_path.exists():
+            if result.returncode == 0 and output_path.exists():
+                size = output_path.stat().st_size
+                if size < MIN_VIDEO_SIZE:
                     output_path.unlink()
-            except Exception:
-                pass
-            return False, f"Timeout after {HLS_TIMEOUT}s"
-        
+                    return False, f'File too small ({size} bytes)'
+                
+                logger.info(f"✓ Converted HLS: {output_path.name} ({size / 1024 / 1024:.1f} MB)")
+                return True, f'{size} bytes'
+            else:
+                error_output = result.stderr.decode('utf-8', errors='ignore')
+                logger.error(f"FFmpeg failed: {error_output[:200]}")
+                return False, 'FFmpeg conversion failed'
+                
+        except subprocess.TimeoutExpired:
+            return False, 'FFmpeg timeout'
         except Exception as e:
-            logger.error(f"FFmpeg exception: {e}")
+            if output_path.exists():
+                output_path.unlink()
             return False, str(e)
 
     def log_to_csv(self, source_url: str, video_url: str, local_path: str, status: str, note: str = ''):
@@ -715,7 +588,7 @@ class VideoDownloader:
         # Discover videos using multiple strategies
         videos = set()
         
-        # Strategy 1: Advanced HTML parsing (always)
+        # Strategy 1: Advanced HTML parsing (always) - NOW WITH DAILYMOTION!
         html_videos = self.discover_from_html(html, url)
         videos.update(html_videos)
         logger.info(f"HTML parsing found {len(html_videos)} video URLs")
@@ -754,6 +627,7 @@ class VideoDownloader:
         print(f"MP4 downloaded:    {self.stats['mp4_downloaded']}")
         print(f"HLS converted:     {self.stats['hls_converted']}")
         print(f"HLS detected:      {self.stats['hls_detected']}")
+        print(f"Dailymotion:       {self.stats['dailymotion_extracted']}")
         print(f"Failed:            {self.stats['failed']}")
         print(f"Robots blocked:    {self.stats['robots_blocked']}")
         print("="*60)
@@ -797,7 +671,7 @@ def setup_logging(verbose: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Download videos from web pages (MP4 + HLS conversion)',
+        description='Download videos from web pages (MP4 + HLS conversion + Dailymotion)',
         epilog='Example: %(prog)s "https://example.com/video-page" --render-js'
     )
     parser.add_argument('url', help='Page URL to scan for videos')
