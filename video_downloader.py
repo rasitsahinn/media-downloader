@@ -240,6 +240,7 @@ class VideoDownloader:
         """
         Extract real video URL from Dailymotion embed
         Supports: HLS (.m3u8), DASH (.mpd), MP4
+        Uses JSON parsing for better accuracy
         """
         try:
             # Extract video ID
@@ -256,7 +257,28 @@ class VideoDownloader:
             response = self.session.get(embed_page_url, timeout=10)
             response.raise_for_status()
             
-            # Strategy 1: Look for HLS (.m3u8)
+            # Strategy 1: Parse __PLAYER_CONFIG__ JSON (BEST!)
+            config_match = re.search(
+                r'window\.__PLAYER_CONFIG__\s*=\s*({.+?});',
+                response.text,
+                re.DOTALL
+            )
+            
+            if config_match:
+                try:
+                    config = json.loads(config_match.group(1))
+                    
+                    # Extract manifestUrl from criticalMetadata
+                    manifest_url = config.get('criticalMetadata', {}).get('manifestUrl')
+                    
+                    if manifest_url:
+                        logger.info(f"✓ Found Dailymotion (JSON): {manifest_url[:60]}...")
+                        self.stats['dailymotion_extracted'] += 1
+                        return manifest_url
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Could not parse __PLAYER_CONFIG__ JSON: {e}")
+            
+            # Strategy 2: Simple regex for HLS (.m3u8)
             m3u8_match = re.search(r'"(https://[^"]+\.m3u8[^"]*)"', response.text)
             if m3u8_match:
                 video_url = m3u8_match.group(1).replace('\\/', '/')
@@ -264,7 +286,7 @@ class VideoDownloader:
                 self.stats['dailymotion_extracted'] += 1
                 return video_url
             
-            # Strategy 2: Look for DASH manifest (.mpd)
+            # Strategy 3: Look for DASH manifest (.mpd)
             mpd_match = re.search(r'"(https://[^"]+\.mpd[^"]*)"', response.text)
             if mpd_match:
                 video_url = mpd_match.group(1).replace('\\/', '/')
@@ -272,7 +294,7 @@ class VideoDownloader:
                 self.stats['dailymotion_extracted'] += 1
                 return video_url
             
-            # Strategy 3: Look for .m4s segments and construct .mpd URL
+            # Strategy 4: Look for .m4s segments and construct .mpd URL
             m4s_match = re.search(r'"(https://[^"]+/video/\d+\.m4s[^"]*)"', response.text)
             if m4s_match:
                 m4s_url = m4s_match.group(1).replace('\\/', '/')
@@ -282,7 +304,7 @@ class VideoDownloader:
                 self.stats['dailymotion_extracted'] += 1
                 return mpd_url
             
-            # Strategy 4: Look for MP4 (fallback)
+            # Strategy 5: Look for MP4 (fallback)
             mp4_match = re.search(r'"(https://[^"]+\.mp4[^"]*)"', response.text)
             if mp4_match:
                 video_url = mp4_match.group(1).replace('\\/', '/')
