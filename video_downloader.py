@@ -182,97 +182,226 @@ class VideoDownloader:
         return None
 
     def find_chrome_binary(self) -> Optional[str]:
-        """Find Chrome binary in standard locations"""
-        # If user provided path, use it
+        """
+        Find Chrome binary in this priority order:
+        1. User-provided --chrome-binary argument
+        2. Portable Chrome in EXE directory (browser/chrome.exe)
+        3. System-installed Chrome in standard locations
+        """
+        # Priority 1: User-provided path
         if self.chrome_binary_path and os.path.exists(self.chrome_binary_path):
+            logger.info(f"✓ Using user-provided Chrome: {self.chrome_binary_path}")
             return self.chrome_binary_path
         
+        # Priority 2: Portable Chrome in EXE directory
+        if getattr(sys, 'frozen', False):
+            # Running as EXE
+            base_dir = Path(sys.executable).parent
+        else:
+            # Running as script
+            base_dir = Path(__file__).parent
+        
+        portable_paths = [
+            base_dir / 'browser' / 'chrome.exe',              # Windows
+            base_dir / 'browser' / 'chrome',                  # Linux/Mac
+            base_dir / 'chrome' / 'chrome.exe',               # Alternative
+            base_dir / 'chrome.exe',                          # Root level
+        ]
+        
+        for path in portable_paths:
+            if path.exists():
+                logger.info(f"✓ Found portable Chrome: {path}")
+                return str(path)
+        
+        # Priority 3: System Chrome
         username = os.getenv('USERNAME') or os.getenv('USER') or 'User'
         
-        chrome_paths = [
-            # Windows standard paths
+        system_paths = [
+            # Windows
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             f"C:\\Users\\{username}\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
             
-            # Mac paths
+            # Mac
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             f"/Users/{username}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             
-            # Linux paths
+            # Linux
             "/usr/bin/google-chrome",
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
         ]
         
-        for path in chrome_paths:
+        for path in system_paths:
             if os.path.exists(path):
+                logger.info(f"✓ Found system Chrome: {path}")
                 return path
         
         return None
     
     def find_chromedriver(self) -> Optional[str]:
-        """Find ChromeDriver executable"""
+        """
+        Find ChromeDriver in this priority order:
+        1. EXE directory (chromedriver.exe)
+        2. Script directory
+        3. System PATH
+        """
         if getattr(sys, 'frozen', False):
-            bundle_dir = Path(sys.executable).parent
-            chromedriver_exe = bundle_dir / 'chromedriver.exe'
-            if chromedriver_exe.exists():
-                return str(chromedriver_exe)
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent
         
-        script_dir = Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
-        chromedriver_exe = script_dir / 'chromedriver.exe'
-        if chromedriver_exe.exists():
-            return str(chromedriver_exe)
+        # Priority 1: Same directory as EXE
+        local_paths = [
+            base_dir / 'chromedriver.exe',
+            base_dir / 'chromedriver',
+        ]
         
+        for path in local_paths:
+            if path.exists():
+                logger.info(f"✓ Found ChromeDriver: {path}")
+                return str(path)
+        
+        # Priority 2: System PATH
         if shutil.which('chromedriver'):
-            return 'chromedriver'
+            system_path = shutil.which('chromedriver')
+            logger.info(f"✓ Found ChromeDriver in PATH: {system_path}")
+            return system_path
         
         return None
     
-    def _setup_selenium(self):
-        """Setup Selenium with Chrome binary detection"""
+    def check_chrome_driver_versions(self, chrome_path: str, driver_path: str) -> bool:
+        """
+        Check if Chrome and ChromeDriver versions match
+        Returns True if compatible, False if mismatch
+        """
         try:
+            # Get Chrome version
+            if sys.platform == 'win32':
+                import subprocess
+                result = subprocess.run(
+                    [chrome_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                chrome_version_str = result.stdout.strip()
+            else:
+                result = subprocess.run(
+                    [chrome_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                chrome_version_str = result.stdout.strip()
+            
+            # Extract major version from Chrome
+            chrome_match = re.search(r'(\d+)\.', chrome_version_str)
+            chrome_major = int(chrome_match.group(1)) if chrome_match else 0
+            
+            # Get ChromeDriver version
+            result = subprocess.run(
+                [driver_path, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            driver_version_str = result.stdout.strip()
+            
+            # Extract major version from ChromeDriver
+            driver_match = re.search(r'ChromeDriver (\d+)\.', driver_version_str)
+            driver_major = int(driver_match.group(1)) if driver_match else 0
+            
+            logger.info(f"Chrome version: {chrome_version_str}")
+            logger.info(f"ChromeDriver version: {driver_version_str}")
+            
+            if chrome_major == driver_major:
+                logger.info(f"✓ Version match: Chrome {chrome_major} == ChromeDriver {driver_major}")
+                return True
+            else:
+                logger.warning(f"⚠ Version mismatch: Chrome {chrome_major} != ChromeDriver {driver_major}")
+                logger.warning("This may cause 'session not created' errors")
+                return False
+        
+        except Exception as e:
+            logger.debug(f"Could not check versions: {e}")
+            return True  # Assume OK if check fails
+    
+    def _setup_selenium(self):
+        """Setup Selenium with Chrome binary detection and version checking"""
+        try:
+            # Find Chrome binary
+            chrome_binary = self.find_chrome_binary()
+            
+            if not chrome_binary:
+                logger.warning("=" * 60)
+                logger.warning("❌ Chrome binary not found")
+                logger.warning("=" * 60)
+                logger.warning("\nSelenium requires Chrome/Chromium to run.")
+                logger.warning("\nOption 1: Install Chrome (recommended)")
+                logger.warning("  Download: https://www.google.com/chrome/")
+                logger.warning("\nOption 2: Use portable Chrome")
+                logger.warning("  1. Download Chrome for Testing:")
+                logger.warning("     https://googlechromelabs.github.io/chrome-for-testing/")
+                logger.warning("  2. Extract to: browser/chrome.exe")
+                logger.warning("  3. Ensure ChromeDriver version matches")
+                logger.warning("\nOption 3: Specify path manually")
+                logger.warning("  Use: --chrome-binary /path/to/chrome.exe")
+                logger.warning("=" * 60)
+                self.selenium_available = False
+                return
+            
+            # Find ChromeDriver
+            if not self.chromedriver_path:
+                logger.warning("❌ ChromeDriver not found")
+                logger.warning("Place chromedriver.exe in same directory as script/EXE")
+                self.selenium_available = False
+                return
+            
+            # Check version compatibility
+            self.check_chrome_driver_versions(chrome_binary, self.chromedriver_path)
+            
+            # Setup Chrome options
             options = Options()
+            options.binary_location = chrome_binary
             options.add_argument('--headless=new')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
             
-            # Find Chrome binary
-            chrome_binary = self.find_chrome_binary()
-            
-            if not chrome_binary:
-                logger.warning("❌ Chrome not found in standard locations")
-                logger.warning("Selenium requires Chrome to be installed")
-                logger.warning("Download Chrome: https://www.google.com/chrome/")
-                logger.warning("Or use --chrome-binary to specify path")
-                self.selenium_available = False
-                return
-            
-            options.binary_location = chrome_binary
-            logger.info(f"✓ Chrome found: {chrome_binary}")
-            
-            # Enable performance logging
+            # Enable performance logging for network capture
             options.set_capability('goog:loggingPrefs', {
                 'performance': 'ALL',
                 'browser': 'ALL'
             })
             
-            # Stealth mode
+            # Stealth mode (reduce automation detection)
             options.add_argument('--disable-blink-features=AutomationControlled')
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option('useAutomationExtension', False)
             
             # Test if Chrome can start
-            if self.chromedriver_path:
+            try:
                 service = Service(executable_path=self.chromedriver_path)
                 test_driver = webdriver.Chrome(service=service, options=options)
-            else:
-                test_driver = webdriver.Chrome(options=options)
-            
-            test_driver.quit()
-            
-            logger.info("✓ Selenium initialized successfully")
+                test_driver.quit()
+                logger.info("✓ Selenium initialized successfully")
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Selenium test failed: {error_msg}")
+                
+                if 'session not created' in error_msg:
+                    logger.error("\n⚠ Common causes:")
+                    logger.error("  1. Chrome/ChromeDriver version mismatch")
+                    logger.error("  2. Architecture mismatch (x64 vs ARM64)")
+                    logger.error("  3. Corrupted Chrome installation")
+                    logger.error("\nCheck versions:")
+                    logger.error(f"  chrome.exe --version")
+                    logger.error(f"  chromedriver.exe --version")
+                    logger.error("\nBoth should have same major version (e.g., both 144)")
+                
+                self.selenium_available = False
+                return
             
         except Exception as e:
             logger.warning(f"⚠ Selenium setup failed: {e}")
