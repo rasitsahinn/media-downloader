@@ -119,11 +119,15 @@ class VideoDownloader:
         
         self.selenium_available = SELENIUM_AVAILABLE
         self.chromedriver_path = None
+        self.chrome_binary_path = args.chrome_binary if hasattr(args, 'chrome_binary') and args.chrome_binary else None
+        
         if self.selenium_available:
             self.chromedriver_path = self.find_chromedriver()
             if not self.chromedriver_path:
-                logger.warning("⚠ ChromeDriver not found - JS rendering disabled")
-                self.selenium_available = False
+                logger.warning("⚠ ChromeDriver not found")
+            
+            if args.render_js:
+                self._setup_selenium()
         
         self.playwright_available = PLAYWRIGHT_AVAILABLE
         
@@ -177,6 +181,36 @@ class VideoDownloader:
         
         return None
 
+    def find_chrome_binary(self) -> Optional[str]:
+        """Find Chrome binary in standard locations"""
+        # If user provided path, use it
+        if self.chrome_binary_path and os.path.exists(self.chrome_binary_path):
+            return self.chrome_binary_path
+        
+        username = os.getenv('USERNAME') or os.getenv('USER') or 'User'
+        
+        chrome_paths = [
+            # Windows standard paths
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            f"C:\\Users\\{username}\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
+            
+            # Mac paths
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            f"/Users/{username}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            
+            # Linux paths
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ]
+        
+        for path in chrome_paths:
+            if os.path.exists(path):
+                return path
+        
+        return None
+    
     def find_chromedriver(self) -> Optional[str]:
         """Find ChromeDriver executable"""
         if getattr(sys, 'frozen', False):
@@ -194,6 +228,56 @@ class VideoDownloader:
             return 'chromedriver'
         
         return None
+    
+    def _setup_selenium(self):
+        """Setup Selenium with Chrome binary detection"""
+        try:
+            options = Options()
+            options.add_argument('--headless=new')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            
+            # Find Chrome binary
+            chrome_binary = self.find_chrome_binary()
+            
+            if not chrome_binary:
+                logger.warning("❌ Chrome not found in standard locations")
+                logger.warning("Selenium requires Chrome to be installed")
+                logger.warning("Download Chrome: https://www.google.com/chrome/")
+                logger.warning("Or use --chrome-binary to specify path")
+                self.selenium_available = False
+                return
+            
+            options.binary_location = chrome_binary
+            logger.info(f"✓ Chrome found: {chrome_binary}")
+            
+            # Enable performance logging
+            options.set_capability('goog:loggingPrefs', {
+                'performance': 'ALL',
+                'browser': 'ALL'
+            })
+            
+            # Stealth mode
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            
+            # Test if Chrome can start
+            if self.chromedriver_path:
+                service = Service(executable_path=self.chromedriver_path)
+                test_driver = webdriver.Chrome(service=service, options=options)
+            else:
+                test_driver = webdriver.Chrome(options=options)
+            
+            test_driver.quit()
+            
+            logger.info("✓ Selenium initialized successfully")
+            
+        except Exception as e:
+            logger.warning(f"⚠ Selenium setup failed: {e}")
+            logger.warning("Video extraction will use HTML parsing only")
+            self.selenium_available = False
 
     def normalize_url(self, url: str) -> str:
         """Normalize URL"""
@@ -828,6 +912,27 @@ class VideoDownloader:
         videos = {v for v in videos if not self.is_noise(v)}
         logger.info(f"After noise filtering: {len(videos)} total videos")
         
+        # Check if no videos found
+        if not videos:
+            logger.error("\n" + "="*60)
+            logger.error("❌ NO VIDEOS FOUND")
+            logger.error("="*60)
+            logger.error("\nPossible reasons:")
+            logger.error("  1. Page has no videos")
+            logger.error("  2. Videos are loaded with JavaScript")
+            logger.error("  3. Videos are in iframes not detected")
+            
+            if not self.args.render_js:
+                logger.error("\n💡 Try with --render-js to enable JavaScript rendering")
+            elif not self.selenium_available:
+                logger.error("\n💡 Selenium not available:")
+                logger.error("  - Chrome not installed")
+                logger.error("  - Download: https://www.google.com/chrome/")
+                logger.error("  - Or use: --chrome-binary /path/to/chrome")
+            
+            logger.error("="*60 + "\n")
+            return
+        
         # Process videos
         for video_url in sorted(videos):
             self.process_video(video_url, url)
@@ -894,6 +999,7 @@ def main():
     parser.add_argument('--cookies', help='Cookies (format: "k1=v1; k2=v2")')
     parser.add_argument('--auth-user', help='Basic auth username')
     parser.add_argument('--auth-pass', help='Basic auth password')
+    parser.add_argument('--chrome-binary', help='Path to chrome.exe (for Selenium)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose logging + debug files')
     
     args = parser.parse_args()
