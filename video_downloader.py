@@ -239,12 +239,11 @@ class VideoDownloader:
     def extract_dailymotion_video_url(self, embed_url: str) -> Optional[str]:
         """
         Extract real video URL from Dailymotion embed
-        Supports: HLS (.m3u8), DASH (.mpd), MP4
-        Uses JSON parsing for better accuracy
+        Robust multi-strategy approach with JSON parsing
         """
         try:
             # Extract video ID
-            match = re.search(r'video[=/]([a-zA-Z0-9]+)', embed_url)
+            match = re.search(r'video[=/]([a-zA-Z0-9]+)', embed_url, re.IGNORECASE)
             if not match:
                 logger.warning(f"Could not extract Dailymotion video ID from: {embed_url}")
                 return None
@@ -254,69 +253,139 @@ class VideoDownloader:
             
             # Fetch embed page
             embed_page_url = f"https://www.dailymotion.com/embed/video/{video_id}"
-            response = self.session.get(embed_page_url, timeout=10)
-            response.raise_for_status()
             
-            # Strategy 1: Parse __PLAYER_CONFIG__ JSON (BEST!)
-            config_match = re.search(
-                r'window\.__PLAYER_CONFIG__\s*=\s*({.+?});',
-                response.text,
-                re.DOTALL
-            )
+            try:
+                response = self.session.get(embed_page_url, timeout=15)
+                response.raise_for_status()
+                html = response.text
+            except Exception as e:
+                logger.error(f"Failed to fetch Dailymotion embed page: {e}")
+                return None
+            
+            # ==========================================
+            # STRATEGY 1: Parse __PLAYER_CONFIG__ JSON
+            # ==========================================
+            logger.debug("Trying Strategy 1: __PLAYER_CONFIG__ JSON parsing")
+            
+            # Find the JSON object - be greedy to capture entire nested object
+            config_pattern = r'window\.__PLAYER_CONFIG__\s*=\s*(\{.+?\});?\s*</script>'
+            config_match = re.search(config_pattern, html, re.DOTALL)
             
             if config_match:
+                json_str = config_match.group(1)
                 try:
-                    config = json.loads(config_match.group(1))
+                    config = json.loads(json_str)
                     
-                    # Extract manifestUrl from criticalMetadata
-                    manifest_url = config.get('criticalMetadata', {}).get('manifestUrl')
+                    # Navigate to manifestUrl
+                    critical_metadata = config.get('criticalMetadata', {})
+                    manifest_url = critical_metadata.get('manifestUrl')
                     
                     if manifest_url:
-                        logger.info(f"✓ Found Dailymotion (JSON): {manifest_url[:60]}...")
+                        logger.info(f"✓ Found via JSON: {manifest_url[:70]}...")
                         self.stats['dailymotion_extracted'] += 1
                         return manifest_url
+                    
+                    logger.debug("JSON parsed but no manifestUrl found")
+                    
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Could not parse __PLAYER_CONFIG__ JSON: {e}")
+                    logger.debug(f"JSON parse failed: {str(e)[:100]}")
+            else:
+                logger.debug("__PLAYER_CONFIG__ pattern not found")
             
-            # Strategy 2: Simple regex for HLS (.m3u8)
-            m3u8_match = re.search(r'"(https://[^"]+\.m3u8[^"]*)"', response.text)
-            if m3u8_match:
-                video_url = m3u8_match.group(1).replace('\\/', '/')
-                logger.info(f"✓ Found Dailymotion HLS: {video_url[:60]}...")
+            # ==========================================
+            # STRATEGY 2: Extract from manifestUrl field
+            # ==========================================
+            logger.debug("Trying Strategy 2: Direct manifestUrl extraction")
+            
+            manifest_pattern = r'"manifestUrl"\s*:\s*"(https://[^"]+)"'
+            manifest_match = re.search(manifest_pattern, html)
+            
+            if manifest_match:
+                manifest_url = manifest_match.group(1)
+                logger.info(f"✓ Found via manifestUrl field: {manifest_url[:70]}...")
                 self.stats['dailymotion_extracted'] += 1
-                return video_url
+                return manifest_url
             
-            # Strategy 3: Look for DASH manifest (.mpd)
-            mpd_match = re.search(r'"(https://[^"]+\.mpd[^"]*)"', response.text)
-            if mpd_match:
-                video_url = mpd_match.group(1).replace('\\/', '/')
-                logger.info(f"✓ Found Dailymotion DASH: {video_url[:60]}...")
+            # ==========================================
+            # STRATEGY 3: Find ANY .m3u8 URL
+            # ==========================================
+            logger.debug("Trying Strategy 3: Any .m3u8 URL")
+            
+            # Look for complete m3u8 URLs
+            m3u8_urls = re.findall(r'(https://[^\s"\'<>]+\.m3u8[^\s"\'<>]*)', html)
+            
+            if m3u8_urls:
+                # Prefer cdndirector or longest URL
+                best_url = max(m3u8_urls, key=lambda x: (
+                    'cdndirector' in x,
+                    'manifest' in x,
+                    len(x)
+                ))
+                logger.info(f"✓ Found via m3u8 scan: {best_url[:70]}...")
                 self.stats['dailymotion_extracted'] += 1
-                return video_url
+                return best_url
             
-            # Strategy 4: Look for .m4s segments and construct .mpd URL
-            m4s_match = re.search(r'"(https://[^"]+/video/\d+\.m4s[^"]*)"', response.text)
-            if m4s_match:
-                m4s_url = m4s_match.group(1).replace('\\/', '/')
-                # Convert: .../video/1719.m4s → .../manifest.mpd
+            # ==========================================
+            # STRATEGY 4: Find ANY .mpd URL (DASH)
+            # ==========================================
+            logger.debug("Trying Strategy 4: Any .mpd URL")
+            
+            mpd_urls = re.findall(r'(https://[^\s"\'<>]+\.mpd[^\s"\'<>]*)', html)
+            
+            if mpd_urls:
+                best_url = max(mpd_urls, key=lambda x: (
+                    'cdndirector' in x,
+                    'manifest' in x,
+                    len(x)
+                ))
+                logger.info(f"✓ Found via mpd scan: {best_url[:70]}...")
+                self.stats['dailymotion_extracted'] += 1
+                return best_url
+            
+            # ==========================================
+            # STRATEGY 5: Construct from .m4s segments
+            # ==========================================
+            logger.debug("Trying Strategy 5: Construct from .m4s")
+            
+            m4s_urls = re.findall(r'(https://[^\s"\'<>]+/video/\d+\.m4s[^\s"\'<>]*)', html)
+            
+            if m4s_urls:
+                # Take first m4s URL and convert to manifest
+                m4s_url = m4s_urls[0]
+                # Convert: .../video/1719.m4s?... → .../manifest.mpd
                 mpd_url = re.sub(r'/video/\d+\.m4s.*', '/manifest.mpd', m4s_url)
-                logger.info(f"✓ Found Dailymotion DASH (via .m4s): {mpd_url[:60]}...")
+                logger.info(f"✓ Constructed from .m4s: {mpd_url[:70]}...")
                 self.stats['dailymotion_extracted'] += 1
                 return mpd_url
             
-            # Strategy 5: Look for MP4 (fallback)
-            mp4_match = re.search(r'"(https://[^"]+\.mp4[^"]*)"', response.text)
-            if mp4_match:
-                video_url = mp4_match.group(1).replace('\\/', '/')
-                logger.info(f"✓ Found Dailymotion MP4: {video_url[:60]}...")
-                self.stats['dailymotion_extracted'] += 1
-                return video_url
+            # ==========================================
+            # STRATEGY 6: Look for direct MP4
+            # ==========================================
+            logger.debug("Trying Strategy 6: Direct MP4")
             
-            logger.warning(f"Could not extract video URL for Dailymotion {video_id}")
+            mp4_urls = re.findall(r'(https://[^\s"\'<>]+\.mp4[^\s"\'<>]*)', html)
+            
+            # Filter out thumbnails/posters
+            video_mp4s = [url for url in mp4_urls if 'poster' not in url and 'thumb' not in url]
+            
+            if video_mp4s:
+                best_url = max(video_mp4s, key=len)
+                logger.info(f"✓ Found MP4: {best_url[:70]}...")
+                self.stats['dailymotion_extracted'] += 1
+                return best_url
+            
+            # ==========================================
+            # ALL STRATEGIES FAILED
+            # ==========================================
+            logger.warning(f"❌ All extraction strategies failed for Dailymotion {video_id}")
+            logger.debug(f"HTML preview (first 500 chars): {html[:500]}")
+            
             return None
             
         except Exception as e:
             logger.error(f"Dailymotion extraction error: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
 
     def discover_from_html(self, html: str, page_url: str) -> Set[str]:
