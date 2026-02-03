@@ -123,6 +123,13 @@ class VideoDownloader:
         if not self.ffmpeg_available:
             logger.warning("⚠ FFmpeg not found - stream conversion disabled")
         
+        self.ytdlp_path = self.find_ytdlp()
+        self.ytdlp_available = self.ytdlp_path is not None
+        if self.ytdlp_available:
+            logger.info(f"✓ Found yt-dlp: {self.ytdlp_path}")
+        else:
+            logger.warning("⚠ yt-dlp not found - Dailymotion downloads may fail")
+        
         self.selenium_available = SELENIUM_AVAILABLE
         self.chromedriver_path = None
         self.chrome_binary_path = args.chrome_binary if hasattr(args, 'chrome_binary') and args.chrome_binary else None
@@ -184,6 +191,24 @@ class VideoDownloader:
         
         if shutil.which('ffmpeg'):
             return 'ffmpeg'
+        
+        return None
+    
+    def find_ytdlp(self) -> Optional[str]:
+        """Find yt-dlp executable"""
+        if getattr(sys, 'frozen', False):
+            bundle_dir = Path(sys.executable).parent
+            ytdlp_exe = bundle_dir / 'yt-dlp.exe'
+            if ytdlp_exe.exists():
+                return str(ytdlp_exe)
+        
+        script_dir = Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
+        ytdlp_exe = script_dir / 'yt-dlp.exe'
+        if ytdlp_exe.exists():
+            return str(ytdlp_exe)
+        
+        if shutil.which('yt-dlp'):
+            return 'yt-dlp'
         
         return None
 
@@ -1019,6 +1044,55 @@ class VideoDownloader:
                 output_path.unlink()
             logger.error(f"FFmpeg exception: {e}")
             return False, str(e)
+    
+    def download_with_ytdlp(self, video_url: str, output_path: Path) -> Tuple[bool, str]:
+        """Download video using yt-dlp (better for Dailymotion with token auth)"""
+        if not self.ytdlp_available:
+            return False, 'yt-dlp not available'
+        
+        try:
+            cmd = [
+                self.ytdlp_path,
+                '-f', 'best',
+                '--no-playlist',
+                '--no-warnings',
+                '--user-agent', USER_AGENT,
+                '--referer', self.source_url,
+                '-o', str(output_path),
+                video_url
+            ]
+            
+            logger.info(f"Downloading with yt-dlp...")
+            logger.debug(f"yt-dlp command: {' '.join(cmd[:8])}...")
+            
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=STREAM_TIMEOUT
+            )
+            
+            if result.returncode == 0 and output_path.exists():
+                size = output_path.stat().st_size
+                if size < MIN_VIDEO_SIZE:
+                    output_path.unlink()
+                    return False, f'File too small ({size} bytes)'
+                
+                logger.info(f"✓ Downloaded with yt-dlp: {output_path.name} ({size / 1024 / 1024:.1f} MB)")
+                return True, f'{size} bytes'
+            else:
+                error_output = result.stderr.decode('utf-8', errors='ignore')
+                logger.error(f"yt-dlp failed: {error_output[:200]}")
+                return False, 'yt-dlp download failed'
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"yt-dlp timeout after {STREAM_TIMEOUT}s")
+            if output_path.exists():
+                output_path.unlink()
+            return False, 'Download timeout'
+        except Exception as e:
+            logger.error(f"yt-dlp error: {e}")
+            return False, str(e)
 
     def log_to_csv(self, source_url: str, video_url: str, local_path: str, status: str, note: str = ''):
         """Write to CSV log"""
@@ -1075,7 +1149,36 @@ class VideoDownloader:
                 self.stats['dash_detected'] += 1
         
         elif is_hls:
-            if self.ffmpeg_available:
+            # Check if this is a Dailymotion URL (use yt-dlp for better auth handling)
+            is_dailymotion = 'dailymotion.com' in normalized
+            
+            if is_dailymotion and self.ytdlp_available:
+                output_path = self.get_output_path(normalized, source_url, force_mp4=True)
+                logger.info(f"Converting HLS (Dailymotion): {normalized}")
+                
+                success, note = self.download_with_ytdlp(normalized, output_path)
+                
+                if success:
+                    self.stats['hls_converted'] += 1
+                    self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls_ytdlp', note)
+                else:
+                    # Fallback to FFmpeg if yt-dlp fails
+                    logger.warning("yt-dlp failed, trying FFmpeg...")
+                    if self.ffmpeg_available:
+                        success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
+                        if success:
+                            self.stats['hls_converted'] += 1
+                            self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
+                        else:
+                            self.stats['failed'] += 1
+                            self.save_stream_url(normalized, "HLS")
+                            self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
+                    else:
+                        self.stats['failed'] += 1
+                        self.save_stream_url(normalized, "HLS")
+                        self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
+            
+            elif self.ffmpeg_available:
                 output_path = self.get_output_path(normalized, source_url, force_mp4=True)
                 logger.info(f"Converting HLS: {normalized}")
                 
