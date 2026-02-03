@@ -1154,25 +1154,54 @@ class VideoDownloader:
             
             if is_dailymotion and self.ytdlp_available:
                 output_path = self.get_output_path(normalized, source_url, force_mp4=True)
-                logger.info(f"Converting HLS (Dailymotion): {normalized}")
                 
-                success, note = self.download_with_ytdlp(normalized, output_path)
+                # Use stored main video ID if available
+                video_id = self._main_video_id
                 
-                if success:
-                    self.stats['hls_converted'] += 1
-                    self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls_ytdlp', note)
-                else:
-                    # Fallback to FFmpeg if yt-dlp fails
-                    logger.warning("yt-dlp failed, trying FFmpeg...")
-                    if self.ffmpeg_available:
-                        success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
-                        if success:
-                            self.stats['hls_converted'] += 1
-                            self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
+                # If not stored, try to extract from URL
+                if not video_id:
+                    video_id_match = re.search(r'/video/([a-zA-Z0-9]+)', normalized)
+                    if video_id_match:
+                        video_id = video_id_match.group(1)
+                
+                if video_id:
+                    # Use Dailymotion page URL instead of manifest
+                    dailymotion_url = f"https://www.dailymotion.com/video/{video_id}"
+                    logger.info(f"Converting HLS (Dailymotion video {video_id})")
+                    
+                    success, note = self.download_with_ytdlp(dailymotion_url, output_path)
+                    
+                    if success:
+                        self.stats['hls_converted'] += 1
+                        self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls_ytdlp', note)
+                    else:
+                        # Fallback to FFmpeg if yt-dlp fails
+                        logger.warning("yt-dlp failed, trying FFmpeg with manifest URL...")
+                        if self.ffmpeg_available:
+                            success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
+                            if success:
+                                self.stats['hls_converted'] += 1
+                                self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
+                            else:
+                                self.stats['failed'] += 1
+                                self.save_stream_url(normalized, "HLS")
+                                self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
                         else:
                             self.stats['failed'] += 1
                             self.save_stream_url(normalized, "HLS")
                             self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
+                else:
+                    # No video ID found, try manifest directly (will likely fail)
+                    logger.warning(f"No video ID found for Dailymotion, trying manifest URL...")
+                    success, note = self.download_with_ytdlp(normalized, output_path)
+                    
+                    if not success and self.ffmpeg_available:
+                        logger.warning("yt-dlp failed, trying FFmpeg...")
+                        success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
+                    
+                    if success:
+                        self.stats['hls_converted'] += 1
+                        self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
                     else:
                         self.stats['failed'] += 1
                         self.save_stream_url(normalized, "HLS")
