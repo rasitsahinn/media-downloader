@@ -114,6 +114,9 @@ class VideoDownloader:
         # Recursion prevention for Hurriyet embeds
         self._fetched_embed_urls = set()
         
+        # Track main video ID (to filter ads)
+        self._main_video_id = None
+        
         # Check dependencies
         self.ffmpeg_path = self.find_ffmpeg()
         self.ffmpeg_available = self.ffmpeg_path is not None
@@ -655,6 +658,13 @@ class VideoDownloader:
             
             if 'dailymotion.com' in src or 'geo.dailymotion.com' in src:
                 logger.info(f"🔍 Found Dailymotion iframe: {src[:60]}...")
+                
+                # Extract video ID from iframe URL
+                video_id_match = re.search(r'/(?:video/|player/)([a-zA-Z0-9]+)', src)
+                if video_id_match and not self._main_video_id:
+                    self._main_video_id = video_id_match.group(1)
+                    logger.debug(f"📌 Main video ID: {self._main_video_id}")
+                
                 real_url = self.extract_dailymotion_video_url(src)
                 if real_url:
                     videos.add(real_url)
@@ -695,6 +705,12 @@ class VideoDownloader:
                         response = message.get('params', {}).get('response', {})
                         url = response.get('url', '')
                         mime_type = response.get('mimeType', '')
+                        
+                        # Skip if we have main video ID and this URL doesn't match it
+                        if self._main_video_id:
+                            if self._main_video_id not in url:
+                                logger.debug(f"⏭ Skipping non-main video: {url[:60]}...")
+                                continue
                         
                         # Filter video URLs
                         if any(ext in url.lower() for ext in ['.m3u8', '.mpd', '.m4s', '.mp4', '.webm']):
@@ -785,6 +801,12 @@ class VideoDownloader:
                         iframe_src = iframe.get_attribute('src')
                         if iframe_src:
                             logger.debug(f"Iframe {i}: {iframe_src[:60]}")
+                            
+                            # Skip iframes that don't match main video ID
+                            if self._main_video_id and 'dailymotion.com' in iframe_src:
+                                if self._main_video_id not in iframe_src:
+                                    logger.debug(f"⏭ Skipping non-main iframe: {iframe_src[:60]}")
+                                    continue
                         
                         driver.switch_to.frame(iframe)
                         time.sleep(1)
@@ -948,6 +970,12 @@ class VideoDownloader:
             else:
                 error_output = result.stderr.decode('utf-8', errors='ignore')
                 
+                # Log full error in debug mode
+                logger.debug("=" * 60)
+                logger.debug("FULL FFMPEG OUTPUT:")
+                logger.debug(error_output)
+                logger.debug("=" * 60)
+                
                 # Parse FFmpeg error
                 if 'Server returned 403 Forbidden' in error_output:
                     logger.error(f"FFmpeg failed: Access denied (403)")
@@ -957,6 +985,7 @@ class VideoDownloader:
                     return False, 'Stream URL expired or invalid'
                 elif 'Invalid data found' in error_output:
                     logger.error(f"FFmpeg failed: Invalid stream format")
+                    logger.debug(f"Stream URL: {stream_url[:100]}...")
                     return False, 'Invalid stream format'
                 elif 'Connection refused' in error_output or 'Connection timed out' in error_output:
                     logger.error(f"FFmpeg failed: Connection error")
@@ -974,10 +1003,11 @@ class VideoDownloader:
                         logger.error(f"FFmpeg failed: {error_lines[-1][:200]}")
                     else:
                         logger.error(f"FFmpeg failed: Exit code {result.returncode}")
-                        # Show last 5 lines of output
-                        last_lines = [l for l in error_output.split('\n') if l.strip()][-5:]
+                        # Show last 10 lines of output
+                        last_lines = [l for l in error_output.split('\n') if l.strip()][-10:]
+                        logger.error("Last FFmpeg output:")
                         for line in last_lines:
-                            logger.debug(f"  {line[:150]}")
+                            logger.error(f"  {line[:150]}")
                     
                     return False, 'FFmpeg conversion failed'
                 
