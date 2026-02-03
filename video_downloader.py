@@ -614,7 +614,27 @@ class VideoDownloader:
                 if src:
                     videos.add(urljoin(page_url, src))
         
-        # 2. <iframe> embeds (Dailymotion)
+        # 2A. Hurriyet video embed (JavaScript variable)
+        hurriyet_pattern = r'dlmPlayerLabel_\w+\s*=\s*\{[^}]*embedUrl:\s*"([^"]+)"'
+        hurriyet_matches = re.findall(hurriyet_pattern, html)
+        
+        for embed_url in hurriyet_matches:
+            logger.info(f"🔍 Found Hurriyet video embed: {embed_url[:60]}...")
+            try:
+                # Fetch Hurriyet embed page
+                embed_response = self.session.get(embed_url, timeout=10)
+                embed_html = embed_response.text
+                
+                # Extract videos from embed page (recursive)
+                embed_videos = self.discover_from_html(embed_html, embed_url)
+                videos.update(embed_videos)
+                
+                if embed_videos:
+                    logger.info(f"✓ Extracted {len(embed_videos)} videos from Hurriyet embed")
+            except Exception as e:
+                logger.warning(f"Failed to fetch Hurriyet embed: {e}")
+        
+        # 2B. <iframe> embeds (Dailymotion direct)
         for iframe in soup.find_all('iframe'):
             src = iframe.get('src')
             if not src:
@@ -690,7 +710,19 @@ class VideoDownloader:
         
         driver = None
         try:
+            # CRITICAL: Find and set Chrome binary FIRST
+            chrome_binary = self.find_chrome_binary()
+            
+            if not chrome_binary:
+                logger.warning("❌ Chrome binary not found for Selenium")
+                return videos
+            
             options = Options()
+            
+            # CRITICAL: Set binary location BEFORE creating driver
+            options.binary_location = chrome_binary
+            logger.debug(f"Using Chrome: {chrome_binary}")
+            
             options.add_argument('--headless=new')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
