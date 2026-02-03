@@ -111,6 +111,9 @@ class VideoDownloader:
         self.downloaded_urls: Set[str] = set()
         self.source_url = args.url
         
+        # Recursion prevention for Hurriyet embeds
+        self._fetched_embed_urls = set()
+        
         # Check dependencies
         self.ffmpeg_path = self.find_ffmpeg()
         self.ffmpeg_available = self.ffmpeg_path is not None
@@ -615,24 +618,34 @@ class VideoDownloader:
                     videos.add(urljoin(page_url, src))
         
         # 2A. Hurriyet video embed (JavaScript variable)
-        hurriyet_pattern = r'dlmPlayerLabel_\w+\s*=\s*\{[^}]*embedUrl:\s*"([^"]+)"'
-        hurriyet_matches = re.findall(hurriyet_pattern, html)
-        
-        for embed_url in hurriyet_matches:
-            logger.info(f"🔍 Found Hurriyet video embed: {embed_url[:60]}...")
-            try:
-                # Fetch Hurriyet embed page
-                embed_response = self.session.get(embed_url, timeout=10)
-                embed_html = embed_response.text
+        # Only process if we haven't found any Hurriyet embeds yet
+        if not any(url in self._fetched_embed_urls for url in self._fetched_embed_urls):
+            hurriyet_pattern = r'dlmPlayerLabel_\w+\s*=\s*\{[^}]*embedUrl:\s*"([^"]+)"'
+            hurriyet_matches = re.findall(hurriyet_pattern, html)
+            
+            # Take only the first unique match
+            unique_embeds = list(dict.fromkeys(hurriyet_matches))
+            
+            if unique_embeds:
+                embed_url = unique_embeds[0]
                 
-                # Extract videos from embed page (recursive)
-                embed_videos = self.discover_from_html(embed_html, embed_url)
-                videos.update(embed_videos)
-                
-                if embed_videos:
-                    logger.info(f"✓ Extracted {len(embed_videos)} videos from Hurriyet embed")
-            except Exception as e:
-                logger.warning(f"Failed to fetch Hurriyet embed: {e}")
+                if embed_url not in self._fetched_embed_urls:
+                    self._fetched_embed_urls.add(embed_url)
+                    logger.info(f"🔍 Found Hurriyet video embed: {embed_url[:60]}...")
+                    
+                    try:
+                        # Fetch Hurriyet embed page
+                        embed_response = self.session.get(embed_url, timeout=10)
+                        embed_html = embed_response.text
+                        
+                        # Extract videos from embed page (recursive)
+                        embed_videos = self.discover_from_html(embed_html, embed_url)
+                        videos.update(embed_videos)
+                        
+                        if embed_videos:
+                            logger.info(f"✓ Extracted {len(embed_videos)} videos from Hurriyet embed")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch Hurriyet embed: {e}")
         
         # 2B. <iframe> embeds (Dailymotion direct)
         for iframe in soup.find_all('iframe'):
@@ -903,8 +916,10 @@ class VideoDownloader:
             return False, 'FFmpeg not available'
         
         try:
+            # Add headers to help with authentication/CORS
             cmd = [
                 self.ffmpeg_path,
+                '-headers', f'Referer: {self.source_url}\r\nUser-Agent: {USER_AGENT}',
                 '-i', stream_url,
                 '-c', 'copy',
                 '-bsf:a', 'aac_adtstoasc',
@@ -913,6 +928,7 @@ class VideoDownloader:
             ]
             
             logger.info(f"Converting {stream_type} stream...")
+            logger.debug(f"FFmpeg command: {' '.join(cmd[:6])}...")
             
             result = subprocess.run(
                 cmd,
@@ -931,14 +947,47 @@ class VideoDownloader:
                 return True, f'{size} bytes'
             else:
                 error_output = result.stderr.decode('utf-8', errors='ignore')
-                logger.error(f"FFmpeg failed: {error_output[:200]}")
-                return False, 'FFmpeg conversion failed'
+                
+                # Parse FFmpeg error
+                if 'Server returned 403 Forbidden' in error_output:
+                    logger.error(f"FFmpeg failed: Access denied (403)")
+                    return False, 'Access denied to stream'
+                elif 'Server returned 404 Not Found' in error_output:
+                    logger.error(f"FFmpeg failed: Stream not found (404)")
+                    return False, 'Stream URL expired or invalid'
+                elif 'Invalid data found' in error_output:
+                    logger.error(f"FFmpeg failed: Invalid stream format")
+                    return False, 'Invalid stream format'
+                elif 'Connection refused' in error_output or 'Connection timed out' in error_output:
+                    logger.error(f"FFmpeg failed: Connection error")
+                    return False, 'Connection error'
+                elif 'moov atom not found' in error_output:
+                    logger.error(f"FFmpeg failed: Incomplete download (moov atom missing)")
+                    return False, 'Incomplete stream'
+                else:
+                    # Show meaningful error lines
+                    error_lines = [line.strip() for line in error_output.split('\n') 
+                                   if line.strip() and ('error' in line.lower() or 'invalid' in line.lower() 
+                                       or 'failed' in line.lower() or 'could not' in line.lower())]
+                    
+                    if error_lines:
+                        logger.error(f"FFmpeg failed: {error_lines[-1][:200]}")
+                    else:
+                        logger.error(f"FFmpeg failed: Exit code {result.returncode}")
+                        # Show last 5 lines of output
+                        last_lines = [l for l in error_output.split('\n') if l.strip()][-5:]
+                        for line in last_lines:
+                            logger.debug(f"  {line[:150]}")
+                    
+                    return False, 'FFmpeg conversion failed'
                 
         except subprocess.TimeoutExpired:
+            logger.error(f"FFmpeg timeout after {STREAM_TIMEOUT}s")
             return False, 'FFmpeg timeout'
         except Exception as e:
             if output_path.exists():
                 output_path.unlink()
+            logger.error(f"FFmpeg exception: {e}")
             return False, str(e)
 
     def log_to_csv(self, source_url: str, video_url: str, local_path: str, status: str, note: str = ''):
