@@ -30,6 +30,13 @@ jobs:
         Copy-Item "ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "."
         Write-Host "✓ FFmpeg ready" -ForegroundColor Green
     
+    - name: Download yt-dlp
+      shell: pwsh
+      run: |
+        Write-Host "Downloading yt-dlp..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "yt-dlp.exe"
+        Write-Host "✓ yt-dlp ready" -ForegroundColor Green
+    
     - name: Get Latest Chrome for Testing Version
       id: chrome-version
       shell: pwsh
@@ -124,6 +131,7 @@ jobs:
         
         # Copy dependencies
         Copy-Item ffmpeg.exe MediaDownloader\
+        Copy-Item yt-dlp.exe MediaDownloader\
         Copy-Item chromedriver.exe MediaDownloader\
         
         # Copy portable Chrome
@@ -157,6 +165,7 @@ jobs:
         $readme += "grab_images.exe - Image downloader`n"
         $readme += "video_downloader.exe - Video downloader`n"
         $readme += "ffmpeg.exe - Video converter`n"
+        $readme += "yt-dlp.exe - Advanced downloader (Dailymotion)`n"
         $readme += "chromedriver.exe - WebDriver`n"
         $readme += "browser/ - Portable Chrome`n"
         $readme += "`n"
