@@ -1,322 +1,204 @@
 #!/usr/bin/env python3
-"""
-Media Downloader - Tkinter GUI
-Simple, lightweight, standalone executable
-"""
-
+"""MediaDownloader - Unified Single EXE"""
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
-import subprocess
 import threading
 import sys
 from pathlib import Path
+import io
 
 class MediaDownloaderGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Media Downloader v1.0")
+        self.root.title("Media Downloader v3.0")
         self.root.geometry("900x700")
-        self.root.resizable(True, True)
-        
-        # Get executable directory
-        if getattr(sys, 'frozen', False):
-            self.exe_dir = Path(sys.executable).parent
-        else:
-            self.exe_dir = Path(__file__).parent
-        
         self.setup_ui()
         self.running = False
     
     def setup_ui(self):
         # Header
-        header_frame = tk.Frame(self.root, bg="#2c3e50", height=80)
-        header_frame.pack(fill="x", side="top")
+        header = tk.Frame(self.root, bg="#2c3e50", height=80)
+        header.pack(fill="x", side="top")
         
-        title_label = tk.Label(
-            header_frame,
-            text="MEDIA DOWNLOADER",
-            font=("Arial", 24, "bold"),
-            bg="#2c3e50",
-            fg="white"
-        )
-        title_label.pack(pady=20)
+        tk.Label(header, text="MEDIA DOWNLOADER", font=("Arial", 24, "bold"),
+                bg="#2c3e50", fg="white").pack(pady=20)
         
-        # Main content
-        main_frame = tk.Frame(self.root, padx=20, pady=20)
-        main_frame.pack(fill="both", expand=True)
+        # Main
+        main = tk.Frame(self.root, padx=20, pady=20)
+        main.pack(fill="both", expand=True)
         
-        # URL Input with placeholder
-        url_frame = ttk.LabelFrame(main_frame, text="URL", padding=10)
+        # URL
+        url_frame = ttk.LabelFrame(main, text="URL", padding=10)
         url_frame.pack(fill="x", pady=(0, 10))
-        
         self.url_entry = ttk.Entry(url_frame, font=("Arial", 11))
         self.url_entry.pack(fill="x")
         
-        # Setup placeholder
-        self.url_placeholder = "Enter URL here (e.g., https://example.com/video)"
-        self.url_entry.insert(0, self.url_placeholder)
-        self.url_entry.config(foreground="gray")
-        self.url_entry.bind("<FocusIn>", self.on_url_focus_in)
-        self.url_entry.bind("<FocusOut>", self.on_url_focus_out)
-        
         # Options
-        options_frame = ttk.LabelFrame(main_frame, text="Options", padding=10)
-        options_frame.pack(fill="x", pady=(0, 10))
+        opts = ttk.LabelFrame(main, text="Options", padding=10)
+        opts.pack(fill="x", pady=(0, 10))
         
-        self.download_images = tk.BooleanVar(value=True)
-        self.download_videos = tk.BooleanVar(value=True)
+        self.dl_images = tk.BooleanVar(value=True)
+        self.dl_videos = tk.BooleanVar(value=True)
         self.ignore_robots = tk.BooleanVar(value=False)
-        self.render_js = tk.BooleanVar(value=False)
-        self.compress_images = tk.BooleanVar(value=False)
         
-        ttk.Checkbutton(
-            options_frame,
-            text="Download Images",
-            variable=self.download_images
-        ).grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        ttk.Checkbutton(opts, text="Images", variable=self.dl_images).grid(row=0, column=0, sticky="w", padx=5)
+        ttk.Checkbutton(opts, text="Videos", variable=self.dl_videos).grid(row=0, column=1, sticky="w", padx=5)
+        ttk.Checkbutton(opts, text="Ignore robots.txt", variable=self.ignore_robots).grid(row=1, column=0, sticky="w", padx=5)
         
-        ttk.Checkbutton(
-            options_frame,
-            text="Download Videos",
-            variable=self.download_videos
-        ).grid(row=0, column=1, sticky="w", padx=5, pady=5)
+        # Output
+        out_frame = ttk.LabelFrame(main, text="Output", padding=10)
+        out_frame.pack(fill="x", pady=(0, 10))
         
-        ttk.Checkbutton(
-            options_frame,
-            text="Ignore robots.txt",
-            variable=self.ignore_robots
-        ).grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        out_inner = tk.Frame(out_frame)
+        out_inner.pack(fill="x")
         
-        ttk.Checkbutton(
-            options_frame,
-            text="Render JavaScript (slower)",
-            variable=self.render_js
-        ).grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        self.out_entry = ttk.Entry(out_inner)
+        self.out_entry.pack(side="left", fill="x", expand=True)
+        self.out_entry.insert(0, str(Path.home() / "Downloads"))
         
-        ttk.Checkbutton(
-            options_frame,
-            text="Compress Images",
-            variable=self.compress_images
-        ).grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        ttk.Button(out_inner, text="Browse", command=self.browse).pack(side="right", padx=(5,0))
         
-        # Output Directory
-        output_frame = ttk.LabelFrame(main_frame, text="Output Directory", padding=10)
-        output_frame.pack(fill="x", pady=(0, 10))
+        # Run button
+        self.run_btn = tk.Button(main, text="▶ RUN", font=("Arial", 14, "bold"),
+                                 bg="#27ae60", fg="white", command=self.run, height=2)
+        self.run_btn.pack(fill="x", pady=(0, 10))
         
-        output_inner = tk.Frame(output_frame)
-        output_inner.pack(fill="x")
-        
-        self.output_entry = ttk.Entry(output_inner, font=("Arial", 10))
-        self.output_entry.pack(side="left", fill="x", expand=True)
-        self.output_entry.insert(0, str(Path.home() / "Downloads" / "media_downloader"))
-        
-        ttk.Button(
-            output_inner,
-            text="Browse...",
-            command=self.browse_output
-        ).pack(side="right", padx=(5, 0))
-        
-        # Run Button
-        self.run_button = tk.Button(
-            main_frame,
-            text="▶ RUN",
-            font=("Arial", 14, "bold"),
-            bg="#27ae60",
-            fg="white",
-            activebackground="#229954",
-            activeforeground="white",
-            command=self.run_download,
-            height=2,
-            cursor="hand2"
-        )
-        self.run_button.pack(fill="x", pady=(0, 10))
-        
-        # Output Log
-        log_frame = ttk.LabelFrame(main_frame, text="Output", padding=10)
+        # Log
+        log_frame = ttk.LabelFrame(main, text="Log", padding=10)
         log_frame.pack(fill="both", expand=True)
         
-        self.output_text = scrolledtext.ScrolledText(
-            log_frame,
-            wrap=tk.WORD,
-            font=("Consolas", 9),
-            bg="#1e1e1e",
-            fg="#00ff00",
-            insertbackground="white"
-        )
-        self.output_text.pack(fill="both", expand=True)
-        
-        # Status Bar
-        self.status_var = tk.StringVar(value="Ready")
-        status_bar = tk.Label(
-            self.root,
-            textvariable=self.status_var,
-            relief=tk.SUNKEN,
-            anchor="w",
-            bg="#34495e",
-            fg="white",
-            font=("Arial", 9)
-        )
-        status_bar.pack(side="bottom", fill="x")
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD,
+                                                   font=("Consolas", 9), bg="#1e1e1e", fg="#00ff00")
+        self.log_text.pack(fill="both", expand=True)
     
-    def on_url_focus_in(self, event):
-        """Remove placeholder text when focused"""
-        if self.url_entry.get() == self.url_placeholder:
-            self.url_entry.delete(0, tk.END)
-            self.url_entry.config(foreground="black")
-    
-    def on_url_focus_out(self, event):
-        """Restore placeholder if empty"""
-        if not self.url_entry.get():
-            self.url_entry.insert(0, self.url_placeholder)
-            self.url_entry.config(foreground="gray")
-    
-    def browse_output(self):
-        """Browse for output directory"""
-        folder = filedialog.askdirectory(
-            title="Select Output Directory",
-            initialdir=self.output_entry.get()
-        )
+    def browse(self):
+        folder = filedialog.askdirectory()
         if folder:
-            self.output_entry.delete(0, tk.END)
-            self.output_entry.insert(0, folder)
+            self.out_entry.delete(0, tk.END)
+            self.out_entry.insert(0, folder)
     
-    def log(self, message, level="INFO"):
-        """Add message to output log"""
-        self.output_text.insert(tk.END, f"[{level}] {message}\n")
-        self.output_text.see(tk.END)
-        self.root.update()
+    def log(self, msg):
+        def _log():
+            self.log_text.insert(tk.END, msg + "\n")
+            self.log_text.see(tk.END)
+        self.root.after(0, _log)
     
-    def run_download(self):
-        """Start download process"""
+    def run(self):
         if self.running:
-            messagebox.showwarning("Already Running", "Download is already in progress!")
             return
         
         url = self.url_entry.get().strip()
-        
-        # Check if URL is valid
-        if url == self.url_placeholder or not url:
-            messagebox.showerror("Error", "Please enter a valid URL")
+        if not url:
+            messagebox.showerror("Error", "Enter URL")
             return
         
-        if not self.download_images.get() and not self.download_videos.get():
-            messagebox.showerror("Error", "Please select at least one option (Images or Videos)")
+        if not self.dl_images.get() and not self.dl_videos.get():
+            messagebox.showerror("Error", "Select at least one option")
             return
         
-        # Disable button and start
         self.running = True
-        self.run_button.config(state="disabled", bg="#7f8c8d")
-        self.status_var.set("Running...")
+        self.run_btn.config(state="disabled")
+        self.log_text.delete("1.0", tk.END)
         
-        # Run in background thread
-        thread = threading.Thread(target=self.download_worker, args=(url,), daemon=True)
-        thread.start()
+        threading.Thread(target=self.worker, args=(url,), daemon=True).start()
     
-    def download_worker(self, url):
-        """Worker thread for downloading"""
+    def worker(self, url):
         try:
-            output_dir = Path(self.output_entry.get())
-            output_dir.mkdir(parents=True, exist_ok=True)
+            out = Path(self.out_entry.get())
+            out.mkdir(parents=True, exist_ok=True)
             
-            self.log("=" * 60)
-            self.log(f"Starting download from: {url}")
-            self.log(f"Output directory: {output_dir}")
-            self.log("=" * 60)
+            self.log(f"URL: {url}")
+            self.log(f"Output: {out}")
             
-            # Download Images
-            if self.download_images.get():
-                self.log("\n>>> DOWNLOADING IMAGES...", "IMAGE")
-                self.status_var.set("Downloading images...")
-                
-                images_dir = output_dir / "images"
-                images_dir.mkdir(exist_ok=True)
-                
-                cmd = [
-                    str(self.exe_dir / "grab_images.exe"),
-                    url,
-                    "--out", str(images_dir),
-                    "--depth", "0",
-                    "--max-pages", "50"
-                ]
-                
-                if self.compress_images.get():
-                    cmd.append("--compress")
-                
-                self.run_command(cmd)
+            if self.dl_images.get():
+                self.log("\n>>> Images...")
+                self.run_images(url, out / "images")
             
-            # Download Videos
-            if self.download_videos.get():
-                self.log("\n>>> DOWNLOADING VIDEOS...", "VIDEO")
-                self.status_var.set("Downloading videos...")
-                
-                videos_dir = output_dir / "videos"
-                videos_dir.mkdir(exist_ok=True)
-                
-                cmd = [
-                    str(self.exe_dir / "video_downloader.exe"),
-                    url,
-                    "--out", str(videos_dir)
-                ]
-                
-                if self.ignore_robots.get():
-                    cmd.append("--ignore-robots")
-                
-                if self.render_js.get():
-                    cmd.append("--render-js")
-                
-                self.run_command(cmd)
+            if self.dl_videos.get():
+                self.log("\n>>> Videos...")
+                self.run_videos(url, out / "videos")
             
-            self.log("\n" + "=" * 60)
-            self.log("DOWNLOAD COMPLETE!", "SUCCESS")
-            self.log("=" * 60)
-            self.status_var.set("Complete!")
+            self.log("\n✓ Complete!")
             
-            messagebox.showinfo(
-                "Success",
-                f"Download complete!\n\nFiles saved to:\n{output_dir}"
-            )
-            
+            def success():
+                messagebox.showinfo("Success", f"Saved to:\n{out}")
+            self.root.after(0, success)
+        
         except Exception as e:
-            self.log(f"\nERROR: {e}", "ERROR")
-            self.status_var.set("Error occurred")
-            messagebox.showerror("Error", f"An error occurred:\n{e}")
+            self.log(f"\nERROR: {e}")
+            def error():
+                messagebox.showerror("Error", str(e))
+            self.root.after(0, error)
         
         finally:
-            # Re-enable button
             self.running = False
-            self.run_button.config(state="normal", bg="#27ae60")
-            self.status_var.set("Ready")
+            self.root.after(0, lambda: self.run_btn.config(state="normal"))
     
-    def run_command(self, cmd):
-        """Run external command and capture output"""
-        self.log(f"Command: {' '.join(cmd)}", "DEBUG")
+    def run_images(self, url, out_dir):
+        import grab_images
         
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
+        out_dir.mkdir(parents=True, exist_ok=True)
         
-        # Read output line by line
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                self.log(line.rstrip())
+        # Capture output
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
         
-        process.wait()
+        try:
+            downloader = grab_images.ImageDownloader(
+                url, str(out_dir), depth=0, max_pages=50, rate_limit=2.0,
+                workers=4, ignore_robots=self.ignore_robots.get()
+            )
+            downloader.crawl()
+            
+            output = sys.stdout.getvalue()
+            for line in output.split('\n'):
+                if line.strip():
+                    self.log(line)
+        finally:
+            sys.stdout = old_stdout
+    
+    def run_videos(self, url, out_dir):
+        import video_downloader
         
-        if process.returncode != 0:
-            self.log(f"Process exited with code {process.returncode}", "WARNING")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        class Args:
+            pass
+        
+        args = Args()
+        args.url = url
+        args.out = str(out_dir)
+        args.rate = 2.0
+        args.retries = 3
+        args.timeout = 20
+        args.render_js = False
+        args.js_wait = 5
+        args.ignore_robots = self.ignore_robots.get()
+        args.cookies = None
+        args.auth_user = None
+        args.auth_pass = None
+        args.chrome_binary = None
+        args.verbose = False
+        args.force = False
+        
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        
+        try:
+            downloader = video_downloader.VideoDownloader(args)
+            downloader.run()
+            downloader.cleanup()
+            
+            output = sys.stdout.getvalue()
+            for line in output.split('\n'):
+                if line.strip():
+                    self.log(line)
+        finally:
+            sys.stdout = old_stdout
     
     def start(self):
-        """Start the GUI main loop"""
         self.root.mainloop()
 
-def main():
-    """Entry point"""
+if __name__ == "__main__":
     app = MediaDownloaderGUI()
     app.start()
-
-if __name__ == "__main__":
-    main()
