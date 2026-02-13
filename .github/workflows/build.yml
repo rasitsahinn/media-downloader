@@ -47,29 +47,19 @@ jobs:
         $readme = "MEDIA DOWNLOADER v3.0`n"
         $readme += "All-in-One Edition`n"
         $readme += "`n"
-        $readme += "QUICK START:`n"
-        $readme += "1. Double-click MediaDownloader.exe`n"
-        $readme += "2. Enter URL`n"
-        $readme += "3. Select options`n"
-        $readme += "4. Click RUN`n"
+        $readme += "Single executable with FFmpeg embedded`n"
         $readme += "`n"
-        $readme += "FEATURES:`n"
-        $readme += "- Download videos (MP4 + HLS)`n"
-        $readme += "- Download images`n"
-        $readme += "- FFmpeg embedded`n"
-        $readme += "- Single file - no dependencies!`n"
-        $readme += "`n"
-        $readme += "NOTE: Dailymotion not supported (no yt-dlp)`n"
+        $readme += "Double-click MediaDownloader.exe to start`n"
         
         $readme | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
         
-        Compress-Archive -Path MediaDownloader\* -DestinationPath MediaDownloader-Unified.zip -Force
+        Compress-Archive -Path MediaDownloader\* -DestinationPath MediaDownloader.zip -Force
         
-        $size = (Get-Item MediaDownloader-Unified.zip).Length / 1MB
-        Write-Host "Package size: $([math]::Round($size, 2)) MB" -ForegroundColor Yellow
+        $size = (Get-Item MediaDownloader.zip).Length / 1MB
+        Write-Host "Package: $([math]::Round($size, 2)) MB" -ForegroundColor Yellow
     
-    - name: Upload Artifact
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MediaDownloader-Unified
-        path: MediaDownloader-Unified.zip
+        name: MediaDownloader
+        path: MediaDownloader.zip
