@@ -111,24 +111,11 @@ class VideoDownloader:
         self.downloaded_urls: Set[str] = set()
         self.source_url = args.url
         
-        # Recursion prevention for Hurriyet embeds
-        self._fetched_embed_urls = set()
-        
-        # Track main video ID (to filter ads)
-        self._main_video_id = None
-        
         # Check dependencies
         self.ffmpeg_path = self.find_ffmpeg()
         self.ffmpeg_available = self.ffmpeg_path is not None
         if not self.ffmpeg_available:
             logger.warning("⚠ FFmpeg not found - stream conversion disabled")
-        
-        self.ytdlp_path = self.find_ytdlp()
-        self.ytdlp_available = self.ytdlp_path is not None
-        if self.ytdlp_available:
-            logger.info(f"✓ Found yt-dlp: {self.ytdlp_path}")
-        else:
-            logger.warning("⚠ yt-dlp not found - Dailymotion downloads may fail")
         
         self.selenium_available = SELENIUM_AVAILABLE
         self.chromedriver_path = None
@@ -191,24 +178,6 @@ class VideoDownloader:
         
         if shutil.which('ffmpeg'):
             return 'ffmpeg'
-        
-        return None
-    
-    def find_ytdlp(self) -> Optional[str]:
-        """Find yt-dlp executable"""
-        if getattr(sys, 'frozen', False):
-            bundle_dir = Path(sys.executable).parent
-            ytdlp_exe = bundle_dir / 'yt-dlp.exe'
-            if ytdlp_exe.exists():
-                return str(ytdlp_exe)
-        
-        script_dir = Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
-        ytdlp_exe = script_dir / 'yt-dlp.exe'
-        if ytdlp_exe.exists():
-            return str(ytdlp_exe)
-        
-        if shutil.which('yt-dlp'):
-            return 'yt-dlp'
         
         return None
 
@@ -645,37 +614,7 @@ class VideoDownloader:
                 if src:
                     videos.add(urljoin(page_url, src))
         
-        # 2A. Hurriyet video embed (JavaScript variable)
-        # Only process if we haven't found any Hurriyet embeds yet
-        if not any(url in self._fetched_embed_urls for url in self._fetched_embed_urls):
-            hurriyet_pattern = r'dlmPlayerLabel_\w+\s*=\s*\{[^}]*embedUrl:\s*"([^"]+)"'
-            hurriyet_matches = re.findall(hurriyet_pattern, html)
-            
-            # Take only the first unique match
-            unique_embeds = list(dict.fromkeys(hurriyet_matches))
-            
-            if unique_embeds:
-                embed_url = unique_embeds[0]
-                
-                if embed_url not in self._fetched_embed_urls:
-                    self._fetched_embed_urls.add(embed_url)
-                    logger.info(f"🔍 Found Hurriyet video embed: {embed_url[:60]}...")
-                    
-                    try:
-                        # Fetch Hurriyet embed page
-                        embed_response = self.session.get(embed_url, timeout=10)
-                        embed_html = embed_response.text
-                        
-                        # Extract videos from embed page (recursive)
-                        embed_videos = self.discover_from_html(embed_html, embed_url)
-                        videos.update(embed_videos)
-                        
-                        if embed_videos:
-                            logger.info(f"✓ Extracted {len(embed_videos)} videos from Hurriyet embed")
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch Hurriyet embed: {e}")
-        
-        # 2B. <iframe> embeds (Dailymotion direct)
+        # 2. <iframe> embeds (Dailymotion)
         for iframe in soup.find_all('iframe'):
             src = iframe.get('src')
             if not src:
@@ -683,13 +622,6 @@ class VideoDownloader:
             
             if 'dailymotion.com' in src or 'geo.dailymotion.com' in src:
                 logger.info(f"🔍 Found Dailymotion iframe: {src[:60]}...")
-                
-                # Extract video ID from iframe URL
-                video_id_match = re.search(r'/(?:video/|player/)([a-zA-Z0-9]+)', src)
-                if video_id_match and not self._main_video_id:
-                    self._main_video_id = video_id_match.group(1)
-                    logger.debug(f"📌 Main video ID: {self._main_video_id}")
-                
                 real_url = self.extract_dailymotion_video_url(src)
                 if real_url:
                     videos.add(real_url)
@@ -731,12 +663,6 @@ class VideoDownloader:
                         url = response.get('url', '')
                         mime_type = response.get('mimeType', '')
                         
-                        # Skip if we have main video ID and this URL doesn't match it
-                        if self._main_video_id:
-                            if self._main_video_id not in url:
-                                logger.debug(f"⏭ Skipping non-main video: {url[:60]}...")
-                                continue
-                        
                         # Filter video URLs
                         if any(ext in url.lower() for ext in ['.m3u8', '.mpd', '.m4s', '.mp4', '.webm']):
                             video_urls.add(url)
@@ -764,19 +690,7 @@ class VideoDownloader:
         
         driver = None
         try:
-            # CRITICAL: Find and set Chrome binary FIRST
-            chrome_binary = self.find_chrome_binary()
-            
-            if not chrome_binary:
-                logger.warning("❌ Chrome binary not found for Selenium")
-                return videos
-            
             options = Options()
-            
-            # CRITICAL: Set binary location BEFORE creating driver
-            options.binary_location = chrome_binary
-            logger.debug(f"Using Chrome: {chrome_binary}")
-            
             options.add_argument('--headless=new')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
@@ -826,12 +740,6 @@ class VideoDownloader:
                         iframe_src = iframe.get_attribute('src')
                         if iframe_src:
                             logger.debug(f"Iframe {i}: {iframe_src[:60]}")
-                            
-                            # Skip iframes that don't match main video ID
-                            if self._main_video_id and 'dailymotion.com' in iframe_src:
-                                if self._main_video_id not in iframe_src:
-                                    logger.debug(f"⏭ Skipping non-main iframe: {iframe_src[:60]}")
-                                    continue
                         
                         driver.switch_to.frame(iframe)
                         time.sleep(1)
@@ -887,7 +795,27 @@ class VideoDownloader:
         return videos
 
     def get_output_path(self, video_url: str, source_url: str, force_mp4: bool = False) -> Path:
-        """Generate output filename"""
+        """Generate output filename with separate folder per source URL"""
+        
+        # Create folder name from source URL
+        source_parsed = urlparse(source_url)
+        folder_name = source_parsed.netloc.replace('www.', '')
+        
+        # Add path if exists (sanitized)
+        if source_parsed.path and source_parsed.path != '/':
+            path_part = source_parsed.path.strip('/').replace('/', '_')
+            # Limit length
+            path_part = path_part[:50]
+            folder_name = f"{folder_name}_{path_part}"
+        
+        # Sanitize folder name
+        folder_name = re.sub(r'[^\w\-]', '_', folder_name)
+        
+        # Create output directory for this source URL
+        url_output_dir = self.output_dir / folder_name
+        url_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename
         parsed = urlparse(video_url)
         filename = os.path.basename(parsed.path)
         
@@ -900,12 +828,12 @@ class VideoDownloader:
         if force_mp4 and not filename.endswith('.mp4'):
             filename = os.path.splitext(filename)[0] + '.mp4'
         
-        output_path = self.output_dir / filename
+        output_path = url_output_dir / filename
         
         counter = 1
         while output_path.exists():
             name, ext = os.path.splitext(filename)
-            output_path = self.output_dir / f"{name}_{counter}{ext}"
+            output_path = url_output_dir / f"{name}_{counter}{ext}"
             counter += 1
         
         return output_path
@@ -963,10 +891,8 @@ class VideoDownloader:
             return False, 'FFmpeg not available'
         
         try:
-            # Add headers to help with authentication/CORS
             cmd = [
                 self.ffmpeg_path,
-                '-headers', f'Referer: {self.source_url}\r\nUser-Agent: {USER_AGENT}',
                 '-i', stream_url,
                 '-c', 'copy',
                 '-bsf:a', 'aac_adtstoasc',
@@ -975,7 +901,6 @@ class VideoDownloader:
             ]
             
             logger.info(f"Converting {stream_type} stream...")
-            logger.debug(f"FFmpeg command: {' '.join(cmd[:6])}...")
             
             result = subprocess.run(
                 cmd,
@@ -994,104 +919,14 @@ class VideoDownloader:
                 return True, f'{size} bytes'
             else:
                 error_output = result.stderr.decode('utf-8', errors='ignore')
-                
-                # Log full error in debug mode
-                logger.debug("=" * 60)
-                logger.debug("FULL FFMPEG OUTPUT:")
-                logger.debug(error_output)
-                logger.debug("=" * 60)
-                
-                # Parse FFmpeg error
-                if 'Server returned 403 Forbidden' in error_output:
-                    logger.error(f"FFmpeg failed: Access denied (403)")
-                    return False, 'Access denied to stream'
-                elif 'Server returned 404 Not Found' in error_output:
-                    logger.error(f"FFmpeg failed: Stream not found (404)")
-                    return False, 'Stream URL expired or invalid'
-                elif 'Invalid data found' in error_output:
-                    logger.error(f"FFmpeg failed: Invalid stream format")
-                    logger.debug(f"Stream URL: {stream_url[:100]}...")
-                    return False, 'Invalid stream format'
-                elif 'Connection refused' in error_output or 'Connection timed out' in error_output:
-                    logger.error(f"FFmpeg failed: Connection error")
-                    return False, 'Connection error'
-                elif 'moov atom not found' in error_output:
-                    logger.error(f"FFmpeg failed: Incomplete download (moov atom missing)")
-                    return False, 'Incomplete stream'
-                else:
-                    # Show meaningful error lines
-                    error_lines = [line.strip() for line in error_output.split('\n') 
-                                   if line.strip() and ('error' in line.lower() or 'invalid' in line.lower() 
-                                       or 'failed' in line.lower() or 'could not' in line.lower())]
-                    
-                    if error_lines:
-                        logger.error(f"FFmpeg failed: {error_lines[-1][:200]}")
-                    else:
-                        logger.error(f"FFmpeg failed: Exit code {result.returncode}")
-                        # Show last 10 lines of output
-                        last_lines = [l for l in error_output.split('\n') if l.strip()][-10:]
-                        logger.error("Last FFmpeg output:")
-                        for line in last_lines:
-                            logger.error(f"  {line[:150]}")
-                    
-                    return False, 'FFmpeg conversion failed'
+                logger.error(f"FFmpeg failed: {error_output[:200]}")
+                return False, 'FFmpeg conversion failed'
                 
         except subprocess.TimeoutExpired:
-            logger.error(f"FFmpeg timeout after {STREAM_TIMEOUT}s")
             return False, 'FFmpeg timeout'
         except Exception as e:
             if output_path.exists():
                 output_path.unlink()
-            logger.error(f"FFmpeg exception: {e}")
-            return False, str(e)
-    
-    def download_with_ytdlp(self, video_url: str, output_path: Path) -> Tuple[bool, str]:
-        """Download video using yt-dlp (better for Dailymotion with token auth)"""
-        if not self.ytdlp_available:
-            return False, 'yt-dlp not available'
-        
-        try:
-            cmd = [
-                self.ytdlp_path,
-                '-f', 'best',
-                '--no-playlist',
-                '--no-warnings',
-                '--user-agent', USER_AGENT,
-                '--referer', self.source_url,
-                '-o', str(output_path),
-                video_url
-            ]
-            
-            logger.info(f"Downloading with yt-dlp...")
-            logger.debug(f"yt-dlp command: {' '.join(cmd[:8])}...")
-            
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=STREAM_TIMEOUT
-            )
-            
-            if result.returncode == 0 and output_path.exists():
-                size = output_path.stat().st_size
-                if size < MIN_VIDEO_SIZE:
-                    output_path.unlink()
-                    return False, f'File too small ({size} bytes)'
-                
-                logger.info(f"✓ Downloaded with yt-dlp: {output_path.name} ({size / 1024 / 1024:.1f} MB)")
-                return True, f'{size} bytes'
-            else:
-                error_output = result.stderr.decode('utf-8', errors='ignore')
-                logger.error(f"yt-dlp failed: {error_output[:200]}")
-                return False, 'yt-dlp download failed'
-                
-        except subprocess.TimeoutExpired:
-            logger.error(f"yt-dlp timeout after {STREAM_TIMEOUT}s")
-            if output_path.exists():
-                output_path.unlink()
-            return False, 'Download timeout'
-        except Exception as e:
-            logger.error(f"yt-dlp error: {e}")
             return False, str(e)
 
     def log_to_csv(self, source_url: str, video_url: str, local_path: str, status: str, note: str = ''):
@@ -1149,65 +984,7 @@ class VideoDownloader:
                 self.stats['dash_detected'] += 1
         
         elif is_hls:
-            # Check if this is a Dailymotion URL (use yt-dlp for better auth handling)
-            is_dailymotion = 'dailymotion.com' in normalized
-            
-            if is_dailymotion and self.ytdlp_available:
-                output_path = self.get_output_path(normalized, source_url, force_mp4=True)
-                
-                # Use stored main video ID if available
-                video_id = self._main_video_id
-                
-                # If not stored, try to extract from URL
-                if not video_id:
-                    video_id_match = re.search(r'/video/([a-zA-Z0-9]+)', normalized)
-                    if video_id_match:
-                        video_id = video_id_match.group(1)
-                
-                if video_id:
-                    # Use Dailymotion page URL instead of manifest
-                    dailymotion_url = f"https://www.dailymotion.com/video/{video_id}"
-                    logger.info(f"Converting HLS (Dailymotion video {video_id})")
-                    
-                    success, note = self.download_with_ytdlp(dailymotion_url, output_path)
-                    
-                    if success:
-                        self.stats['hls_converted'] += 1
-                        self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls_ytdlp', note)
-                    else:
-                        # Fallback to FFmpeg if yt-dlp fails
-                        logger.warning("yt-dlp failed, trying FFmpeg with manifest URL...")
-                        if self.ffmpeg_available:
-                            success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
-                            if success:
-                                self.stats['hls_converted'] += 1
-                                self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
-                            else:
-                                self.stats['failed'] += 1
-                                self.save_stream_url(normalized, "HLS")
-                                self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
-                        else:
-                            self.stats['failed'] += 1
-                            self.save_stream_url(normalized, "HLS")
-                            self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
-                else:
-                    # No video ID found, try manifest directly (will likely fail)
-                    logger.warning(f"No video ID found for Dailymotion, trying manifest URL...")
-                    success, note = self.download_with_ytdlp(normalized, output_path)
-                    
-                    if not success and self.ffmpeg_available:
-                        logger.warning("yt-dlp failed, trying FFmpeg...")
-                        success, note = self.download_stream_with_ffmpeg(normalized, output_path, "HLS")
-                    
-                    if success:
-                        self.stats['hls_converted'] += 1
-                        self.log_to_csv(source_url, normalized, str(output_path), 'converted_hls', note)
-                    else:
-                        self.stats['failed'] += 1
-                        self.save_stream_url(normalized, "HLS")
-                        self.log_to_csv(source_url, normalized, '', 'conversion_failed', note)
-            
-            elif self.ffmpeg_available:
+            if self.ffmpeg_available:
                 output_path = self.get_output_path(normalized, source_url, force_mp4=True)
                 logger.info(f"Converting HLS: {normalized}")
                 
