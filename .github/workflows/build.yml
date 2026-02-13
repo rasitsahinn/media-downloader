@@ -30,18 +30,11 @@ jobs:
         Copy-Item "ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "."
         Write-Host "Done" -ForegroundColor Green
     
-    - name: Download yt-dlp
-      shell: pwsh
-      run: |
-        Write-Host "Downloading yt-dlp..." -ForegroundColor Cyan
-        Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "yt-dlp.exe"
-        Write-Host "Done" -ForegroundColor Green
-    
     - name: Build Single Unified EXE
       shell: pwsh
       run: |
         Write-Host "Building MediaDownloader.exe..." -ForegroundColor Cyan
-        pyinstaller --onefile --windowed --name MediaDownloader --add-data "ffmpeg.exe;." --hidden-import grab_images --hidden-import video_downloader --hidden-import dailymotion_downloader --collect-all selenium --collect-all requests --collect-all beautifulsoup4 --collect-all lxml --collect-all PIL --collect-all imagehash unified_gui.py
+        pyinstaller --onefile --windowed --name MediaDownloader --add-data "ffmpeg.exe;." --hidden-import grab_images --hidden-import video_downloader --collect-all selenium --collect-all requests --collect-all beautifulsoup4 --collect-all lxml --collect-all PIL --collect-all imagehash unified_gui.py
         Write-Host "Done" -ForegroundColor Green
     
     - name: Create Package
@@ -50,7 +43,6 @@ jobs:
         Write-Host "Creating package..." -ForegroundColor Cyan
         New-Item -ItemType Directory -Path MediaDownloader -Force
         Copy-Item dist\MediaDownloader.exe MediaDownloader\
-        Copy-Item yt-dlp.exe MediaDownloader\
         
         $readme = "MEDIA DOWNLOADER v3.0`n"
         $readme += "All-in-One Edition`n"
@@ -61,11 +53,13 @@ jobs:
         $readme += "3. Select options`n"
         $readme += "4. Click RUN`n"
         $readme += "`n"
-        $readme += "FILES:`n"
-        $readme += "MediaDownloader.exe - Main program (FFmpeg embedded)`n"
-        $readme += "yt-dlp.exe - Dailymotion support`n"
+        $readme += "FEATURES:`n"
+        $readme += "- Download videos (MP4 + HLS)`n"
+        $readme += "- Download images`n"
+        $readme += "- FFmpeg embedded`n"
+        $readme += "- Single file - no dependencies!`n"
         $readme += "`n"
-        $readme += "IMPORTANT: Keep files together!`n"
+        $readme += "NOTE: Dailymotion not supported (no yt-dlp)`n"
         
         $readme | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
         
