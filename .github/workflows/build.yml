@@ -1,8 +1,6 @@
 name: Build Single Unified EXE
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -28,104 +26,46 @@ jobs:
         Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
         Expand-Archive -Path ffmpeg.zip -DestinationPath .
         Copy-Item "ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "."
-        Write-Host "✓ FFmpeg ready" -ForegroundColor Green
+        Write-Host "Done" -ForegroundColor Green
     
     - name: Download yt-dlp
       shell: pwsh
       run: |
         Write-Host "Downloading yt-dlp..." -ForegroundColor Cyan
         Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "yt-dlp.exe"
-        Write-Host "✓ yt-dlp ready" -ForegroundColor Green
+        Write-Host "Done" -ForegroundColor Green
     
     - name: Build Single Unified EXE
       shell: pwsh
       run: |
-        Write-Host "Building MediaDownloader.exe (All-in-One)..." -ForegroundColor Cyan
-        
-        # Build with all modules embedded
-        pyinstaller --onefile --windowed `
-          --name MediaDownloader `
-          --add-data "ffmpeg.exe;." `
-          --add-data "yt-dlp.exe;." `
-          --hidden-import grab_images `
-          --hidden-import video_downloader `
-          --hidden-import dailymotion_downloader `
-          --collect-all selenium `
-          --collect-all requests `
-          --collect-all beautifulsoup4 `
-          --collect-all lxml `
-          --collect-all PIL `
-          --collect-all imagehash `
-          unified_gui.py
-        
-        Write-Host "✓ MediaDownloader.exe built" -ForegroundColor Green
+        Write-Host "Building MediaDownloader.exe..." -ForegroundColor Cyan
+        pyinstaller --onefile --windowed --name MediaDownloader --hidden-import grab_images --hidden-import video_downloader --collect-all selenium --collect-all requests --collect-all beautifulsoup4 unified_gui.py
+        Write-Host "Done" -ForegroundColor Green
     
     - name: Create Package
       shell: pwsh
       run: |
         Write-Host "Creating package..." -ForegroundColor Cyan
-        
-        # Create directory
         New-Item -ItemType Directory -Path MediaDownloader -Force
-        
-        # Copy files
         Copy-Item dist\MediaDownloader.exe MediaDownloader\
         Copy-Item ffmpeg.exe MediaDownloader\
         Copy-Item yt-dlp.exe MediaDownloader\
         
-        Write-Host "✓ Files copied" -ForegroundColor Green
+        $readme = "MEDIA DOWNLOADER v3.0`n"
+        $readme += "All-in-One Edition`n`n"
+        $readme += "QUICK START:`n"
+        $readme += "1. Double-click MediaDownloader.exe`n"
+        $readme += "2. Enter URL`n"
+        $readme += "3. Click RUN`n`n"
+        $readme += "Keep all files together!`n"
         
-        # Create README
-        @'
-        MEDIA DOWNLOADER v3.0
-        All-in-One Edition
+        $readme | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
         
-        QUICK START:
-        1. Double-click MediaDownloader.exe
-        2. Enter URL
-        3. Select options (Images/Videos)
-        4. Click RUN
-        5. Done!
-        
-        FEATURES:
-        - Download videos (MP4 + HLS + DASH)
-        - Download images with filters
-        - Dailymotion support
-        - Simple GUI interface
-        - All-in-One - No external EXE files needed!
-        
-        SIZE:
-        Single EXE: ~20 MB (includes everything!)
-        
-        REQUIREMENTS:
-        - Windows 10/11 (64-bit)
-        - No installation needed
-        
-        FILES:
-        MediaDownloader.exe - All-in-One GUI
-        ffmpeg.exe - Video converter
-        yt-dlp.exe - Advanced downloader
-        
-        IMPORTANT:
-        Keep all 3 files in the same folder!
-        
-        GitHub: github.com/YOUR_USERNAME/media-downloader
-        '@ | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
-        
-        Write-Host "✓ README.txt created" -ForegroundColor Green
-        
-        # Create ZIP
-        Compress-Archive -Path MediaDownloader\* -DestinationPath MediaDownloader-Windows-Unified.zip -Force
-        
-        # Get size
-        $size = (Get-Item MediaDownloader-Windows-Unified.zip).Length / 1MB
-        Write-Host "`n✓ Package created: MediaDownloader-Windows-Unified.zip" -ForegroundColor Green
-        Write-Host "Size: $([math]::Round($size, 2)) MB" -ForegroundColor Yellow
-        Write-Host "Previous: 25 MB (3 EXE files)" -ForegroundColor Gray
-        Write-Host "Savings: Single unified EXE!" -ForegroundColor Green
+        Compress-Archive -Path MediaDownloader\* -DestinationPath MediaDownloader-Unified.zip -Force
+        Write-Host "Done" -ForegroundColor Green
     
-    - name: Upload Artifact
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MediaDownloader-Windows-Unified
-        path: MediaDownloader-Windows-Unified.zip
+        name: MediaDownloader-Unified
+        path: MediaDownloader-Unified.zip
