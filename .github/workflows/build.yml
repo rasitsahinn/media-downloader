@@ -1,6 +1,8 @@
 name: Build Single Unified EXE
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -39,7 +41,7 @@ jobs:
       shell: pwsh
       run: |
         Write-Host "Building MediaDownloader.exe..." -ForegroundColor Cyan
-        pyinstaller --onefile --windowed --name MediaDownloader --hidden-import grab_images --hidden-import video_downloader --collect-all selenium --collect-all requests --collect-all beautifulsoup4 unified_gui.py
+        pyinstaller --onefile --windowed --name MediaDownloader --add-data "ffmpeg.exe;." --hidden-import grab_images --hidden-import video_downloader --hidden-import dailymotion_downloader --collect-all selenium --collect-all requests --collect-all beautifulsoup4 --collect-all lxml --collect-all PIL --collect-all imagehash unified_gui.py
         Write-Host "Done" -ForegroundColor Green
     
     - name: Create Package
@@ -48,23 +50,31 @@ jobs:
         Write-Host "Creating package..." -ForegroundColor Cyan
         New-Item -ItemType Directory -Path MediaDownloader -Force
         Copy-Item dist\MediaDownloader.exe MediaDownloader\
-        Copy-Item ffmpeg.exe MediaDownloader\
         Copy-Item yt-dlp.exe MediaDownloader\
         
         $readme = "MEDIA DOWNLOADER v3.0`n"
-        $readme += "All-in-One Edition`n`n"
+        $readme += "All-in-One Edition`n"
+        $readme += "`n"
         $readme += "QUICK START:`n"
         $readme += "1. Double-click MediaDownloader.exe`n"
         $readme += "2. Enter URL`n"
-        $readme += "3. Click RUN`n`n"
-        $readme += "Keep all files together!`n"
+        $readme += "3. Select options`n"
+        $readme += "4. Click RUN`n"
+        $readme += "`n"
+        $readme += "FILES:`n"
+        $readme += "MediaDownloader.exe - Main program (FFmpeg embedded)`n"
+        $readme += "yt-dlp.exe - Dailymotion support`n"
+        $readme += "`n"
+        $readme += "IMPORTANT: Keep files together!`n"
         
         $readme | Out-File -FilePath MediaDownloader\README.txt -Encoding UTF8
         
         Compress-Archive -Path MediaDownloader\* -DestinationPath MediaDownloader-Unified.zip -Force
-        Write-Host "Done" -ForegroundColor Green
+        
+        $size = (Get-Item MediaDownloader-Unified.zip).Length / 1MB
+        Write-Host "Package size: $([math]::Round($size, 2)) MB" -ForegroundColor Yellow
     
-    - name: Upload
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: MediaDownloader-Unified
